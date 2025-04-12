@@ -11,11 +11,9 @@ fn panic(info: &PanicInfo) -> ! {
     loop {}
 }
 
-static HELLO: &[u8] = b"Hello, world!";
-
 #[no_mangle]
 pub extern "C" fn _start() -> ! {
-    println!("NelOS");
+    println!("NelOS v{}", env!("CARGO_PKG_VERSION"));
 
     loop {}
 }
