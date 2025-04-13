@@ -5,27 +5,22 @@
 #![reexport_test_harness_main = "test_main"]
 
 use core::panic::PanicInfo;
+
 use nel_os::println;
 
-#[cfg(not(test))]
-#[panic_handler]
-fn panic(info: &PanicInfo) -> ! {
-    println!("{}", info);
+#[unsafe(no_mangle)]
+pub extern "C" fn _start() -> ! {
+    test_main();
+
     loop {}
 }
 
-#[cfg(test)]
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
     nel_os::test_panic_handler(info)
 }
 
-#[no_mangle]
-pub extern "C" fn _start() -> ! {
-    println!("NelOS v{}", env!("CARGO_PKG_VERSION"));
-
-    #[cfg(test)]
-    test_main();
-
-    loop {}
+#[test_case]
+fn test_println() {
+    println!("test_println output");
 }
