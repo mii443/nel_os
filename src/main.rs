@@ -24,6 +24,8 @@ fn panic(info: &PanicInfo) -> ! {
 pub extern "C" fn _start() -> ! {
     println!("NelOS v{}", env!("CARGO_PKG_VERSION"));
 
+    nel_os::init();
+
     #[cfg(test)]
     test_main();
 
