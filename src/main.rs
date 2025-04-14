@@ -4,10 +4,16 @@
 #![test_runner(nel_os::test_runner)]
 #![reexport_test_harness_main = "test_main"]
 
+extern crate alloc;
+
 use bootloader::{entry_point, BootInfo};
 use core::panic::PanicInfo;
-use nel_os::{memory, println};
-use x86_64::{structures::paging::Translate, VirtAddr};
+use nel_os::{
+    allocator,
+    memory::{self, BootInfoFrameAllocator},
+    println,
+};
+use x86_64::VirtAddr;
 
 #[cfg(not(test))]
 #[panic_handler]
@@ -30,19 +36,10 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
     nel_os::init();
 
     let phys_mem_offset = VirtAddr::new(boot_info.physical_memory_offset);
-    let mapper = unsafe { memory::init(phys_mem_offset) };
-    let addresses = [
-        0xb8000,
-        0x201008,
-        0x0100_0020_1a10,
-        boot_info.physical_memory_offset,
-    ];
+    let mut mapper = unsafe { memory::init(phys_mem_offset) };
+    let mut frame_allocator = unsafe { BootInfoFrameAllocator::init(&boot_info.memory_map) };
 
-    for &address in &addresses {
-        let virt = VirtAddr::new(address);
-        let phys = mapper.translate_addr(virt);
-        println!("{:?} -> {:?}", virt, phys);
-    }
+    allocator::init_heap(&mut mapper, &mut frame_allocator).expect("heap initialization failed");
 
     #[cfg(test)]
     test_main();
