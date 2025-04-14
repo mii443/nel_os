@@ -7,10 +7,16 @@
 
 pub mod gdt;
 pub mod interrupts;
+pub mod memory;
 pub mod serial;
 pub mod vga_buffer;
 
 use core::panic::PanicInfo;
+
+#[cfg(test)]
+use bootloader::entry_point;
+#[cfg(test)]
+use bootloader::BootInfo;
 
 pub trait Testable {
     fn run(&self) -> ();
@@ -43,8 +49,10 @@ pub fn test_panic_handler(info: &PanicInfo) -> ! {
 }
 
 #[cfg(test)]
-#[unsafe(no_mangle)]
-pub extern "C" fn _start() -> ! {
+entry_point!(test_kernel_main);
+
+#[cfg(test)]
+fn test_kernel_main(_boot_info: &'static BootInfo) -> ! {
     init();
     test_main();
     hlt_loop();
