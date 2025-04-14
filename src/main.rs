@@ -12,6 +12,7 @@ use nel_os::{
     allocator,
     memory::{self, BootInfoFrameAllocator},
     println,
+    vmm::support::{has_intel_cpu, has_vmx_support},
 };
 use x86_64::VirtAddr;
 
@@ -40,6 +41,9 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
     let mut frame_allocator = unsafe { BootInfoFrameAllocator::init(&boot_info.memory_map) };
 
     allocator::init_heap(&mut mapper, &mut frame_allocator).expect("heap initialization failed");
+
+    println!("has_intel_cpu: {}", has_intel_cpu());
+    println!("has_vmx_support: {}", has_vmx_support());
 
     #[cfg(test)]
     test_main();
