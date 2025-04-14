@@ -21,7 +21,12 @@ features = ["spin_no_std"]
 [package.metadata.bootimage]
 run-args = [
   "-serial",
-  "stdio"
+  "stdio",
+  "-display",
+  "none",
+  "-cpu",
+  "host",
+  "-enable-kvm"
 ]
 test-args = [
     "-device",
