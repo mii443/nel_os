@@ -1,20 +1,32 @@
 #![no_std]
 #![no_main]
 #![feature(custom_test_frameworks)]
+#![feature(new_zeroed_alloc)]
 #![test_runner(nel_os::test_runner)]
 #![reexport_test_harness_main = "test_main"]
 
 extern crate alloc;
 
+use alloc::boxed::Box;
 use bootloader::{entry_point, BootInfo};
+use core::arch::asm;
 use core::panic::PanicInfo;
 use nel_os::{
-    allocator,
+    allocator, info,
     memory::{self, BootInfoFrameAllocator},
     println,
-    vmm::support::{has_intel_cpu, has_vmx_support},
+    vmm::{
+        support::{has_intel_cpu, has_vmx_support},
+        vmxon::Vmxon,
+    },
 };
-use x86_64::VirtAddr;
+use x86::bits64::{paging::BASE_PAGE_SIZE, rflags};
+use x86_64::structures::paging::FrameAllocator;
+use x86_64::{
+    registers::{control::Cr0Flags, segmentation::Segment},
+    structures::paging::Translate,
+    VirtAddr,
+};
 
 #[cfg(not(test))]
 #[panic_handler]
@@ -42,8 +54,62 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
 
     allocator::init_heap(&mut mapper, &mut frame_allocator).expect("heap initialization failed");
 
-    println!("has_intel_cpu: {}", has_intel_cpu());
-    println!("has_vmx_support: {}", has_vmx_support());
+    let mut vmxon = unsafe { Box::<Vmxon>::new_zeroed().assume_init() };
+
+    if has_intel_cpu() && has_vmx_support() {
+        info!("Intel CPU with VMX support detected");
+    } else {
+        panic!("VMX not supported");
+    }
+
+    vmxon.init();
+    vmxon.activate_vmxon(mapper).unwrap();
+
+    info!("Checking vmlaunch requirements...");
+    {
+        let mut success = true;
+        let cr0 = x86_64::registers::control::Cr0::read();
+        if cr0.contains(Cr0Flags::PROTECTED_MODE_ENABLE) {
+            info!("Protected mode is enabled");
+        } else {
+            info!("Protected mode is not enabled");
+            success = false;
+        }
+
+        let rflags = rflags::read();
+        if rflags.contains(rflags::RFlags::FLAGS_VM) {
+            info!("VM flag is enabled");
+            success = false;
+        } else {
+            info!("VM flag is not enabled");
+        }
+
+        let ia32_efer = unsafe { x86::msr::rdmsr(x86::msr::IA32_EFER) };
+        if (ia32_efer & 1 << 10) != 0 {
+            info!("IA32_EFER.LMA is enabled");
+            let cs = x86_64::registers::segmentation::CS::get_reg().0;
+            if cs & 0x1 == 0 {
+                info!("CS.L is enabled");
+            } else {
+                info!("CS.L is not enabled");
+                success = false;
+            }
+        } else {
+            info!("IA32_EFER.LMA is not enabled");
+        }
+
+        if success {
+            info!("vmlaunch requirements are met");
+        } else {
+            panic!("vmlaunch requirements are not met");
+        }
+    }
+
+    info!("vmlaunch...");
+
+    unsafe {
+        asm!("vmlaunch");
+    }
 
     #[cfg(test)]
     test_main();
