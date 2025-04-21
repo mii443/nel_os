@@ -7,7 +7,6 @@
 
 extern crate alloc;
 
-use alloc::boxed::Box;
 use bootloader::{entry_point, BootInfo};
 use core::arch::asm;
 use core::panic::PanicInfo;
@@ -20,11 +19,9 @@ use nel_os::{
         vmxon::Vmxon,
     },
 };
-use x86::bits64::{paging::BASE_PAGE_SIZE, rflags};
-use x86_64::structures::paging::FrameAllocator;
+use x86::bits64::rflags;
 use x86_64::{
     registers::{control::Cr0Flags, segmentation::Segment},
-    structures::paging::Translate,
     VirtAddr,
 };
 
@@ -54,16 +51,16 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
 
     allocator::init_heap(&mut mapper, &mut frame_allocator).expect("heap initialization failed");
 
-    let mut vmxon = unsafe { Box::<Vmxon>::new_zeroed().assume_init() };
-
     if has_intel_cpu() && has_vmx_support() {
         info!("Intel CPU with VMX support detected");
     } else {
         panic!("VMX not supported");
     }
 
-    vmxon.init();
-    vmxon.activate_vmxon(mapper).unwrap();
+    let mut vmxon = Vmxon::new(&mut frame_allocator);
+
+    vmxon.init(phys_mem_offset.as_u64());
+    vmxon.activate_vmxon().unwrap();
 
     info!("Checking vmlaunch requirements...");
     {
@@ -110,6 +107,8 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
     unsafe {
         asm!("vmlaunch");
     }
+
+    info!("vmlaunch succeeded");
 
     #[cfg(test)]
     test_main();
