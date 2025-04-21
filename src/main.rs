@@ -16,14 +16,10 @@ use nel_os::{
     println,
     vmm::{
         support::{has_intel_cpu, has_vmx_support},
-        vmxon::Vmxon,
+        vcpu::VCpu,
     },
 };
-use x86::bits64::rflags;
-use x86_64::{
-    registers::{control::Cr0Flags, segmentation::Segment},
-    VirtAddr,
-};
+use x86_64::VirtAddr;
 
 #[cfg(not(test))]
 #[panic_handler]
@@ -57,50 +53,9 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
         panic!("VMX not supported");
     }
 
-    let mut vmxon = Vmxon::new(&mut frame_allocator);
-
-    vmxon.init(phys_mem_offset.as_u64());
-    vmxon.activate_vmxon().unwrap();
-
-    info!("Checking vmlaunch requirements...");
-    {
-        let mut success = true;
-        let cr0 = x86_64::registers::control::Cr0::read();
-        if cr0.contains(Cr0Flags::PROTECTED_MODE_ENABLE) {
-            info!("Protected mode is enabled");
-        } else {
-            info!("Protected mode is not enabled");
-            success = false;
-        }
-
-        let rflags = rflags::read();
-        if rflags.contains(rflags::RFlags::FLAGS_VM) {
-            info!("VM flag is enabled");
-            success = false;
-        } else {
-            info!("VM flag is not enabled");
-        }
-
-        let ia32_efer = unsafe { x86::msr::rdmsr(x86::msr::IA32_EFER) };
-        if (ia32_efer & 1 << 10) != 0 {
-            info!("IA32_EFER.LMA is enabled");
-            let cs = x86_64::registers::segmentation::CS::get_reg().0;
-            if cs & 0x1 == 0 {
-                info!("CS.L is enabled");
-            } else {
-                info!("CS.L is not enabled");
-                success = false;
-            }
-        } else {
-            info!("IA32_EFER.LMA is not enabled");
-        }
-
-        if success {
-            info!("vmlaunch requirements are met");
-        } else {
-            panic!("vmlaunch requirements are not met");
-        }
-    }
+    let mut vcpu = VCpu::new(phys_mem_offset.as_u64(), &mut frame_allocator);
+    vcpu.activate();
+    vcpu.reset_vmcs().unwrap();
 
     info!("vmlaunch...");
 
