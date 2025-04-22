@@ -12,7 +12,10 @@ use core::arch::naked_asm;
 use crate::{
     info,
     memory::BootInfoFrameAllocator,
-    vmm::vmcs::{DescriptorType, EntryControls, Granularity, SegmentRights},
+    vmm::vmcs::{
+        DescriptorType, EntryControls, Granularity, PrimaryExitControls,
+        PrimaryProcessorBasedVmExecutionControls, SegmentRights,
+    },
 };
 
 use super::{
@@ -68,7 +71,7 @@ impl VCpu {
 
         pin_exec_ctrl.write();
 
-        let mut primary_exec_ctrl = PinBasedVmExecutionControls::read();
+        let mut primary_exec_ctrl = PrimaryProcessorBasedVmExecutionControls::read();
 
         let reserved_bits = if basic_msr & (1 << 55) != 0 {
             unsafe { rdmsr(x86::msr::IA32_VMX_TRUE_PROCBASED_CTLS) }
@@ -78,6 +81,8 @@ impl VCpu {
 
         primary_exec_ctrl.0 |= (reserved_bits & 0xFFFFFFFF) as u32;
         primary_exec_ctrl.0 &= (reserved_bits >> 32) as u32;
+        primary_exec_ctrl.set_hlt(false);
+        primary_exec_ctrl.set_activate_secondary_controls(false);
 
         primary_exec_ctrl.write();
 
@@ -99,6 +104,7 @@ impl VCpu {
 
         entry_ctrl.0 |= (reserved_bits & 0xFFFFFFFF) as u32;
         entry_ctrl.0 &= (reserved_bits >> 32) as u32;
+        entry_ctrl.set_ia32e_mode_guest(true);
 
         entry_ctrl.write();
 
@@ -110,7 +116,7 @@ impl VCpu {
 
         let basic_msr = unsafe { rdmsr(x86::msr::IA32_VMX_BASIC) };
 
-        let mut exit_ctrl = EntryControls::read();
+        let mut exit_ctrl = PrimaryExitControls::read();
 
         let reserved_bits = if basic_msr & (1 << 55) != 0 {
             unsafe { rdmsr(x86::msr::IA32_VMX_TRUE_EXIT_CTLS) }
@@ -120,6 +126,8 @@ impl VCpu {
 
         exit_ctrl.0 |= (reserved_bits & 0xFFFFFFFF) as u32;
         exit_ctrl.0 &= (reserved_bits >> 32) as u32;
+        exit_ctrl.set_host_addr_space_size(true);
+        exit_ctrl.set_load_ia32_efer(true);
 
         exit_ctrl.write();
 

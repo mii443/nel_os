@@ -171,7 +171,33 @@ impl PinBasedVmExecutionControls {
     }
 }
 
-pub struct PrimaryProcessorBasedVmExecutionControls(pub u32);
+bitfield! {
+    pub struct PrimaryProcessorBasedVmExecutionControls(u32);
+    impl Debug;
+
+    pub interrupt_window, set_interrupt_window: 2;
+    pub tsc_offsetting, set_tsc_offsetting: 3;
+    pub hlt, set_hlt: 7;
+    pub invlpg, set_invlpg: 9;
+    pub mwait, set_mwait: 10;
+    pub rdpmc, set_rdpmc: 11;
+    pub rdtsc, set_rdtsc: 12;
+    pub cr3load, set_cr3load: 15;
+    pub cr3store, set_cr3store: 16;
+    pub activate_teritary_controls, set_activate_teritary_controls: 17;
+    pub cr8load, set_cr8load: 19;
+    pub cr8store, set_cr8store: 20;
+    pub use_tpr_shadow, set_use_tpr_shadow: 21;
+    pub nmi_window, set_nmi_window: 22;
+    pub mov_dr, set_mov_dr: 23;
+    pub unconditional_io, set_unconditional_io: 24;
+    pub use_io_bitmap, set_use_io_bitmap: 25;
+    pub monitor_trap, set_monitor_trap: 27;
+    pub use_msr_bitmap, set_use_msr_bitmap: 28;
+    pub monitor, set_monitor: 29;
+    pub pause, set_pause: 30;
+    pub activate_secondary_controls, set_activate_secondary_controls: 31;
+}
 
 impl PrimaryProcessorBasedVmExecutionControls {
     pub fn read() -> Self {
