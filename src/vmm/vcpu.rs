@@ -1,4 +1,13 @@
-use x86::{msr::rdmsr, vmx::VmFail};
+use x86::{
+    bits64::vmx::vmwrite,
+    controlregs::{cr0, cr3, cr4},
+    dtables::{self, DescriptorTablePointer},
+    halt,
+    msr::{self, rdmsr, IA32_EFER, IA32_FS_BASE},
+    vmx::{vmcs, VmFail},
+};
+
+use core::arch::naked_asm;
 
 use crate::{info, memory::BootInfoFrameAllocator};
 
@@ -66,7 +75,70 @@ impl VCpu {
         Ok(())
     }
 
+    pub fn setup_host_state(&mut self) -> Result<(), VmFail> {
+        unsafe {
+            vmwrite(vmcs::host::CR0, cr0().bits() as u64)?;
+            vmwrite(vmcs::host::CR3, cr3())?;
+            vmwrite(vmcs::host::CR4, cr4().bits() as u64)?;
+
+            vmwrite(vmcs::host::RIP, Self::vmexit as u64)?;
+
+            vmwrite(
+                vmcs::host::ES_SELECTOR,
+                x86::segmentation::es().bits() as u64,
+            )?;
+            vmwrite(
+                vmcs::host::CS_SELECTOR,
+                x86::segmentation::cs().bits() as u64,
+            )?;
+            vmwrite(
+                vmcs::host::SS_SELECTOR,
+                x86::segmentation::ss().bits() as u64,
+            )?;
+            vmwrite(
+                vmcs::host::DS_SELECTOR,
+                x86::segmentation::ds().bits() as u64,
+            )?;
+            vmwrite(
+                vmcs::host::FS_SELECTOR,
+                x86::segmentation::fs().bits() as u64,
+            )?;
+            vmwrite(
+                vmcs::host::GS_SELECTOR,
+                x86::segmentation::gs().bits() as u64,
+            )?;
+            vmwrite(vmcs::host::FS_BASE, rdmsr(IA32_FS_BASE))?;
+            vmwrite(vmcs::host::GS_BASE, rdmsr(IA32_FS_BASE))?;
+
+            let tr = x86::task::tr();
+            let mut gdtp = DescriptorTablePointer::<u64>::default();
+            let mut idtp = DescriptorTablePointer::<u64>::default();
+            dtables::sgdt(&mut gdtp);
+            dtables::sidt(&mut idtp);
+            vmwrite(vmcs::host::GDTR_BASE, gdtp.base as u64)?;
+            vmwrite(vmcs::host::IDTR_BASE, idtp.base as u64)?;
+            vmwrite(vmcs::host::TR_SELECTOR, tr.bits() as u64)?;
+            vmwrite(vmcs::host::TR_BASE, 0)?;
+
+            vmwrite(msr::IA32_EFER, rdmsr(IA32_EFER))?;
+        }
+        Ok(())
+    }
+
     pub fn reset_vmcs(&mut self) -> Result<(), VmFail> {
         self.vmcs.reset()
+    }
+
+    fn vmexit_handler(&mut self) -> ! {
+        info!("VMExit occurred");
+
+        loop {
+            unsafe { halt() };
+        }
+    }
+
+    #[naked]
+    unsafe extern "C" fn vmexit(&mut self) -> ! {
+        naked_asm!("call {vmexit_handler}", vmexit_handler = sym Self::vmexit_handler);
     }
 }
