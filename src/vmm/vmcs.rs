@@ -171,6 +171,57 @@ impl PinBasedVmExecutionControls {
     }
 }
 
+/*
+
+   _reserved1: u2,
+   interrupt_window: bool,
+   tsc_offsetting: bool,
+   _reserved2: u3,
+   hlt: bool,
+   _reserved3: u1,
+   invlpg: bool,
+   mwait: bool,
+   rdpmc: bool,
+   rdtsc: bool,
+   _reserved4: u2,
+   cr3load: bool,
+   cr3store: bool,
+   activate_teritary_controls: bool,
+   _reserved: u1,
+   cr8load: bool,
+   cr8store: bool,
+   use_tpr_shadow: bool,
+   nmi_window: bool,
+   mov_dr: bool,
+   unconditional_io: bool,
+   use_io_bitmap: bool,
+   _reserved5: u1,
+   monitor_trap: bool,
+   use_msr_bitmap: bool,
+   monitor: bool,
+   pause: bool,
+   activate_secondary_controls: bool,
+*/
+
+pub struct PrimaryProcessorBasedVmExecutionControls(pub u32);
+
+impl PrimaryProcessorBasedVmExecutionControls {
+    pub fn read() -> Self {
+        let err = VmcsControl32::PRIMARY_PROCESSOR_BASED_VM_EXECUTION_CONTROLS.read();
+        if err.is_err() {
+            panic!("Failed to read Primary Processor Based VM Execution Controls");
+        }
+        let err = err.unwrap();
+        PrimaryProcessorBasedVmExecutionControls(err)
+    }
+
+    pub fn write(&self) {
+        VmcsControl32::PRIMARY_PROCESSOR_BASED_VM_EXECUTION_CONTROLS
+            .write(self.0)
+            .expect("Failed to write Primary Processor Based VM Execution Controls");
+    }
+}
+
 pub enum VmcsControl32 {
     PIN_BASED_VM_EXECUTION_CONTROLS = 0x00004000,
     PRIMARY_PROCESSOR_BASED_VM_EXECUTION_CONTROLS = 0x00004002,
