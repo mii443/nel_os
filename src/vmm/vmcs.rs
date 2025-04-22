@@ -218,6 +218,43 @@ bitfield! {
     pub unusable, set_unusable: 16;
 }
 
+bitfield! {
+    pub struct EntryControls(u32);
+    impl Debug;
+
+    pub load_debug_controls, set_load_debug_controls: 2;
+    pub ia32e_mode_guest, set_ia32e_mode_guest: 9;
+    pub entry_smm, set_entry_smm: 10;
+    pub deactivate_dualmonitor, set_deactivate_dualmonitor: 11;
+    pub load_perf_global_ctrl, set_load_perf_global_ctrl: 13;
+    pub load_ia32_pat, set_load_ia32_pat: 14;
+    pub load_ia32_efer, set_load_ia32_efer: 15;
+    pub load_ia32_bndcfgs, set_load_ia32_bndcfgs: 16;
+    pub conceal_vmx_from_pt, set_conceal_vmx_from_pt: 17;
+    pub load_rtit_ctl, set_load_rtit_ctl: 18;
+    pub load_uinv, set_load_uinv: 19;
+    pub load_cet_state, set_load_cet_state: 20;
+    pub load_guest_lbr_ctl, set_load_guest_lbr_ctl: 21;
+    pub load_pkrs, set_load_pkrs: 22;
+}
+
+impl EntryControls {
+    pub fn read() -> Self {
+        let err = VmcsControl32::VM_ENTRY_CONTROLS.read();
+        if err.is_err() {
+            panic!("Failed to read VM Entry Controls");
+        }
+        let err = err.unwrap();
+        EntryControls(err)
+    }
+
+    pub fn write(&self) {
+        VmcsControl32::VM_ENTRY_CONTROLS
+            .write(self.0)
+            .expect("Failed to write VM Entry Controls");
+    }
+}
+
 pub enum VmcsControl32 {
     PIN_BASED_VM_EXECUTION_CONTROLS = 0x00004000,
     PRIMARY_PROCESSOR_BASED_VM_EXECUTION_CONTROLS = 0x00004002,

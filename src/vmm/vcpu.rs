@@ -12,7 +12,7 @@ use core::arch::naked_asm;
 use crate::{
     info,
     memory::BootInfoFrameAllocator,
-    vmm::vmcs::{DescriptorType, Granularity, SegmentRights},
+    vmm::vmcs::{DescriptorType, EntryControls, Granularity, SegmentRights},
 };
 
 use super::{
@@ -46,6 +46,7 @@ impl VCpu {
             .write_revision_id(revision_id, self.phys_mem_offset);
         self.reset_vmcs().unwrap();
         self.setup_exec_ctrls().unwrap();
+        self.setup_entry_ctrls().unwrap();
         self.setup_host_state().unwrap();
         self.setup_guest_state().unwrap();
     }
@@ -78,6 +79,27 @@ impl VCpu {
         primary_exec_ctrl.0 &= (reserved_bits >> 32) as u32;
 
         primary_exec_ctrl.write();
+
+        Ok(())
+    }
+
+    pub fn setup_entry_ctrls(&mut self) -> Result<(), VmFail> {
+        info!("Setting up entry controls");
+
+        let basic_msr = unsafe { rdmsr(x86::msr::IA32_VMX_BASIC) };
+
+        let mut entry_ctrl = EntryControls::read();
+
+        let reserved_bits = if basic_msr & (1 << 55) != 0 {
+            unsafe { rdmsr(x86::msr::IA32_VMX_TRUE_ENTRY_CTLS) }
+        } else {
+            unsafe { rdmsr(x86::msr::IA32_VMX_ENTRY_CTLS) }
+        };
+
+        entry_ctrl.0 |= (reserved_bits & 0xFFFFFFFF) as u32;
+        entry_ctrl.0 &= (reserved_bits >> 32) as u32;
+
+        entry_ctrl.write();
 
         Ok(())
     }
