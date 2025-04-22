@@ -14,6 +14,7 @@ pc-keyboard = "0.8.0"
 linked_list_allocator = "0.9.0"
 x86 = "0.52.0"
 bitfield = "0.19.0"
+numeric-enum-macro = "0.2.0"
 
 [dependencies.lazy_static]
 version = "1.0"

@@ -1,6 +1,9 @@
 #![allow(non_camel_case_types)]
 
+use core::convert::TryInto;
+
 use bitfield::{bitfield, BitMut};
+use numeric_enum_macro::numeric_enum;
 use x86::{bits64::vmx, vmx::VmFail};
 use x86_64::structures::paging::{FrameAllocator, PhysFrame};
 
@@ -244,6 +247,19 @@ bitfield! {
     pub unusable, set_unusable: 16;
 }
 
+impl Default for SegmentRights {
+    fn default() -> Self {
+        let mut rights = SegmentRights(0);
+        rights.set_accessed(true);
+        rights.set_present(true);
+        rights.set_avl(false);
+        rights.set_long(false);
+        rights.set_unusable(false);
+
+        rights
+    }
+}
+
 bitfield! {
     pub struct EntryControls(u32);
     impl Debug;
@@ -357,3 +373,205 @@ pub enum VmcsReadOnlyData32 {
     VM_EXIT_INSTRUCTION_INFO = 0x0000440E,
 }
 vmcs_read!(VmcsReadOnlyData32, u32);
+
+numeric_enum! {
+#[repr(u16)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VmxExitReason {
+    EXCEPTION = 0,
+    EXTERNAL_INTERRUPT = 1,
+    TRIPLE_FAULT = 2,
+    INIT = 3,
+    SIPI = 4,
+    IO_SMI = 5,
+    OTHER_SMI = 6,
+    INTERRUPT_WINDOW = 7,
+    NMI_WINDOW = 8,
+    TASK_SWITCH = 9,
+    CPUID = 10,
+    GETSEC = 11,
+    HLT = 12,
+    INVD = 13,
+    INVLPG = 14,
+    RDPMC = 15,
+    RDTSC = 16,
+    RSM = 17,
+    VMCALL = 18,
+    VMCLEAR = 19,
+    VMLAUNCH = 20,
+    VMPTRLD = 21,
+    VMPTRST = 22,
+    VMREAD = 23,
+    VMRESUME = 24,
+    VMWRITE = 25,
+    VMXOFF = 26,
+    VMXON = 27,
+    CONTROL_REGISTER_ACCESSES = 28,
+    MOV_DR = 29,
+    IO_INSTRUCTION = 30,
+    RDMSR = 31,
+    WRMSR = 32,
+    VM_ENTRY_FAILURE_INVALID_GUEST_STATE = 33,
+    VM_ENTRY_FAILURE_MSR_LOADING = 34,
+    MWAIT = 36,
+    MONITOR_TRAP_FLAG = 37,
+    MONITOR = 39,
+    PAUSE = 40,
+    VM_ENTRY_FAILURE_MACHINE_CHECK_EVENT = 41,
+    TPR_BELOW_THRESHOLD = 43,
+    APIC_ACCESS = 44,
+    VIRTUALIZED_EOI = 45,
+    ACCESS_TO_GDTR_OR_IDTR = 46,
+    ACCESS_TO_LDTR_OR_TR = 47,
+    EPT_VIOLATION = 48,
+    EPT_MISCONFIGURATION = 49,
+    INVEPT = 50,
+    RDTSCP = 51,
+    VMX_PREEMPTION_TIMER_EXPIRED = 52,
+    INVVPID = 53,
+    WBINVD = 54,
+    XSETBV = 55,
+    APIC_WRITE = 56,
+    RDRAND = 57,
+    INVPCID = 58,
+    VMFUNC = 59,
+    ENCLS = 60,
+    RDSEED = 61,
+    PAGE_MODIFICATION_LOG_FULL = 62,
+    XSAVES = 63,
+    XRSTORS = 64,
+    PCONFIG = 65,
+    SPP_RELATED_EVENT = 66,
+    UMWAIT = 67,
+    TPAUSE = 68,
+    LOADIWKEY = 69,
+    ENCLV = 70,
+    ENQCMD_PASID_TRANSLATION_FAILURE = 72,
+    ENQCMDS_PASID_TRANSLATION_FAILURE = 73,
+    BUS_LOCK = 74,
+    INSTRUCTION_TIMEOUT = 75,
+    SEAMCALL = 76,
+    TDCALL = 77,
+    RDMSRLIST = 78,
+    WRMSRLIST = 79,
+}
+}
+
+impl VmxExitReason {
+    pub fn read() -> Self {
+        let reason = VmcsReadOnlyData32::VM_EXIT_REASON.read();
+        if reason.is_err() {
+            panic!("Failed to read VM exit reason");
+        }
+
+        (reason.unwrap() as u16).try_into().unwrap()
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        use VmxExitReason::*;
+        match self {
+            EXCEPTION => "Exception or non-maskable interrupt (NMI)",
+            EXTERNAL_INTERRUPT => "External interrupt",
+            TRIPLE_FAULT => "Triple fault",
+            INIT => "INIT signal",
+            SIPI => "Start-up IPI (SIPI)",
+            IO_SMI => "I/O system-management interrupt (SMI)",
+            OTHER_SMI => "Other SMI",
+            INTERRUPT_WINDOW => "Interrupt window",
+            NMI_WINDOW => "NMI window",
+            TASK_SWITCH => "Task switch",
+            CPUID => "CPUID instruction execution",
+            GETSEC => "GETSEC instruction execution",
+            HLT => "HLT instruction execution",
+            INVD => "INVD instruction execution",
+            INVLPG => "INVLPG instruction execution",
+            RDPMC => "RDPMC instruction execution",
+            RDTSC => "RDTSC instruction execution",
+            RSM => "RSM instruction execution in SMM",
+            VMCALL => "VMCALL instruction execution",
+            VMCLEAR => "VMCLEAR instruction execution",
+            VMLAUNCH => "VMLAUNCH instruction execution",
+            VMPTRLD => "VMPTRLD instruction execution",
+            VMPTRST => "VMPTRST instruction execution",
+            VMREAD => "VMREAD instruction execution",
+            VMRESUME => "VMRESUME instruction execution",
+            VMWRITE => "VMWRITE instruction execution",
+            VMXOFF => "VMXOFF instruction execution",
+            VMXON => "VMXON instruction execution",
+            CONTROL_REGISTER_ACCESSES => "Control-register accesses",
+            MOV_DR => "MOV to or from debug registers",
+            IO_INSTRUCTION => "I/O instruction execution",
+            RDMSR => "RDMSR instruction execution",
+            WRMSR => "WRMSR or WRMSRNS instruction execution",
+            VM_ENTRY_FAILURE_INVALID_GUEST_STATE => "VM-entry failure due to invalid guest state",
+            VM_ENTRY_FAILURE_MSR_LOADING => "VM-entry failure due to MSR loading",
+            MWAIT => "MWAIT instruction execution",
+            MONITOR_TRAP_FLAG => "Monitor trap flag",
+            MONITOR => "MONITOR instruction execution",
+            PAUSE => "PAUSE instruction execution",
+            VM_ENTRY_FAILURE_MACHINE_CHECK_EVENT => "VM-entry failure due to machine-check event",
+            TPR_BELOW_THRESHOLD => "TPR below threshold",
+            APIC_ACCESS => "APIC access",
+            VIRTUALIZED_EOI => "Virtualized EOI",
+            ACCESS_TO_GDTR_OR_IDTR => "Access to GDTR or IDTR",
+            ACCESS_TO_LDTR_OR_TR => "Access to LDTR or TR",
+            EPT_VIOLATION => "EPT violation",
+            EPT_MISCONFIGURATION => "EPT misconfiguration",
+            INVEPT => "INVEPT instruction execution",
+            RDTSCP => "RDTSCP instruction execution",
+            VMX_PREEMPTION_TIMER_EXPIRED => "VMX-preemption timer expired",
+            INVVPID => "INVVPID instruction execution",
+            WBINVD => "WBINVD or WBNOINVD instruction execution",
+            XSETBV => "XSETBV instruction execution",
+            APIC_WRITE => "APIC write",
+            RDRAND => "RDRAND instruction execution",
+            INVPCID => "INVPCID instruction execution",
+            VMFUNC => "VMFUNC instruction execution",
+            ENCLS => "ENCLS instruction execution",
+            RDSEED => "RDSEED instruction execution",
+            PAGE_MODIFICATION_LOG_FULL => "Page-modification log full",
+            XSAVES => "XSAVES instruction execution",
+            XRSTORS => "XRSTORS instruction execution",
+            PCONFIG => "PCONFIG instruction execution",
+            SPP_RELATED_EVENT => "SPP-related event",
+            UMWAIT => "UMWAIT instruction execution",
+            TPAUSE => "TPAUSE instruction execution",
+            LOADIWKEY => "LOADIWKEY instruction execution",
+            ENCLV => "ENCLV instruction execution",
+            ENQCMD_PASID_TRANSLATION_FAILURE => "ENQCMD PASID translation failure",
+            ENQCMDS_PASID_TRANSLATION_FAILURE => "ENQCMDS PASID translation failure",
+            BUS_LOCK => "Bus lock",
+            INSTRUCTION_TIMEOUT => "Instruction timeout",
+            SEAMCALL => "SEAMCALL instruction execution",
+            TDCALL => "TDCALL instruction execution",
+            RDMSRLIST => "RDMSRLIST instruction execution",
+            WRMSRLIST => "WRMSRLIST instruction execution",
+        }
+    }
+}
+
+bitfield! {
+    pub struct VmxExitInfo(u32);
+    impl Debug;
+
+    pub u16, basic_reason, set_basic_reason: 15, 0;
+    pub pending_mtf, set_pending_mtf: 26;
+    pub exit_vmxroot, set_exit_vmxroot: 27;
+    pub entry_failure, set_entry_failure: 31;
+}
+
+impl VmxExitInfo {
+    pub fn read() -> Self {
+        let info = VmcsReadOnlyData32::VM_EXIT_REASON.read();
+        if info.is_err() {
+            panic!("Failed to read VM exit reason");
+        }
+        let info = info.unwrap();
+        Self(info)
+    }
+
+    pub fn get_reason(&self) -> VmxExitReason {
+        let reason = self.basic_reason() as u16;
+        reason.try_into().unwrap()
+    }
+}

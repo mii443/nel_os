@@ -1,20 +1,21 @@
 use x86::{
-    bits64::vmx::vmwrite,
+    bits64::vmx::{vmread, vmwrite},
     controlregs::{cr0, cr3, cr4},
     dtables::{self, DescriptorTablePointer},
     halt,
     msr::{rdmsr, IA32_EFER, IA32_FS_BASE},
     vmx::{vmcs, VmFail},
 };
+use x86_64::VirtAddr;
 
-use core::arch::naked_asm;
+use core::arch::{asm, naked_asm};
 
 use crate::{
     info,
     memory::BootInfoFrameAllocator,
     vmm::vmcs::{
         DescriptorType, EntryControls, Granularity, PrimaryExitControls,
-        PrimaryProcessorBasedVmExecutionControls, SegmentRights,
+        PrimaryProcessorBasedVmExecutionControls, SegmentRights, VmxExitInfo,
     },
 };
 
@@ -28,6 +29,9 @@ pub struct VCpu {
     pub vmcs: Vmcs,
     pub phys_mem_offset: u64,
 }
+
+const TEMP_STACK_SIZE: usize = 4096;
+static mut TEMP_STACK: [u8; TEMP_STACK_SIZE + 0x10] = [0; TEMP_STACK_SIZE + 0x10];
 
 impl VCpu {
     pub fn new(phys_mem_offset: u64, frame_allocator: &mut BootInfoFrameAllocator) -> Self {
@@ -81,7 +85,7 @@ impl VCpu {
 
         primary_exec_ctrl.0 |= (reserved_bits & 0xFFFFFFFF) as u32;
         primary_exec_ctrl.0 &= (reserved_bits >> 32) as u32;
-        primary_exec_ctrl.set_hlt(true);
+        primary_exec_ctrl.set_hlt(false);
         primary_exec_ctrl.set_activate_secondary_controls(false);
 
         primary_exec_ctrl.write();
@@ -142,6 +146,10 @@ impl VCpu {
             vmwrite(vmcs::host::CR4, cr4().bits() as u64)?;
 
             vmwrite(vmcs::host::RIP, Self::vmexit as u64)?;
+            vmwrite(
+                vmcs::host::RSP,
+                VirtAddr::from_ptr(&raw mut TEMP_STACK).as_u64() + TEMP_STACK_SIZE as u64,
+            )?;
 
             vmwrite(
                 vmcs::host::ES_SELECTOR,
@@ -204,16 +212,16 @@ impl VCpu {
             vmwrite(vmcs::guest::IDTR_BASE, 0)?;
             vmwrite(vmcs::guest::LDTR_BASE, 0xDEAD00)?;
 
-            vmwrite(vmcs::guest::CS_LIMIT, u32::MAX as u64)?;
-            vmwrite(vmcs::guest::SS_LIMIT, u32::MAX as u64)?;
-            vmwrite(vmcs::guest::DS_LIMIT, u32::MAX as u64)?;
-            vmwrite(vmcs::guest::ES_LIMIT, u32::MAX as u64)?;
-            vmwrite(vmcs::guest::FS_LIMIT, u32::MAX as u64)?;
-            vmwrite(vmcs::guest::GS_LIMIT, u32::MAX as u64)?;
-            vmwrite(vmcs::guest::TR_LIMIT, u32::MAX as u64)?;
-            vmwrite(vmcs::guest::GDTR_LIMIT, u32::MAX as u64)?;
-            vmwrite(vmcs::guest::IDTR_LIMIT, u32::MAX as u64)?;
-            vmwrite(vmcs::guest::LDTR_LIMIT, u32::MAX as u64)?;
+            vmwrite(vmcs::guest::CS_LIMIT, 0xffff)?;
+            vmwrite(vmcs::guest::SS_LIMIT, 0xffff)?;
+            vmwrite(vmcs::guest::DS_LIMIT, 0xffff)?;
+            vmwrite(vmcs::guest::ES_LIMIT, 0xffff)?;
+            vmwrite(vmcs::guest::FS_LIMIT, 0xffff)?;
+            vmwrite(vmcs::guest::GS_LIMIT, 0xffff)?;
+            vmwrite(vmcs::guest::TR_LIMIT, 0)?;
+            vmwrite(vmcs::guest::GDTR_LIMIT, 0)?;
+            vmwrite(vmcs::guest::IDTR_LIMIT, 0)?;
+            vmwrite(vmcs::guest::LDTR_LIMIT, 0)?;
 
             vmwrite(
                 vmcs::guest::CS_SELECTOR,
@@ -227,8 +235,8 @@ impl VCpu {
             vmwrite(vmcs::guest::TR_SELECTOR, 0)?;
             vmwrite(vmcs::guest::LDTR_SELECTOR, 0)?;
 
-            let cs_rights = {
-                let mut rights = SegmentRights(0);
+            let cs_right = {
+                let mut rights = SegmentRights::default();
                 rights.set_rw(true);
                 rights.set_dc(false);
                 rights.set_executable(true);
@@ -237,12 +245,12 @@ impl VCpu {
                 rights.set_granularity_raw(Granularity::KByte as u8);
                 rights.set_long(true);
                 rights.set_db(false);
+
                 rights
             };
-            vmwrite(vmcs::guest::CS_ACCESS_RIGHTS, cs_rights.0 as u64)?;
 
-            let ds_rights = {
-                let mut rights = SegmentRights(0);
+            let ds_right = {
+                let mut rights = SegmentRights::default();
                 rights.set_rw(true);
                 rights.set_dc(false);
                 rights.set_executable(false);
@@ -251,12 +259,12 @@ impl VCpu {
                 rights.set_granularity_raw(Granularity::KByte as u8);
                 rights.set_long(false);
                 rights.set_db(true);
+
                 rights
             };
-            vmwrite(vmcs::guest::DS_ACCESS_RIGHTS, ds_rights.0 as u64)?;
 
-            let tr_rights = {
-                let mut rights = SegmentRights(0);
+            let tr_right = {
+                let mut rights = SegmentRights::default();
                 rights.set_rw(true);
                 rights.set_dc(false);
                 rights.set_executable(true);
@@ -265,12 +273,12 @@ impl VCpu {
                 rights.set_granularity_raw(Granularity::Byte as u8);
                 rights.set_long(false);
                 rights.set_db(false);
+
                 rights
             };
-            vmwrite(vmcs::guest::TR_ACCESS_RIGHTS, tr_rights.0 as u64)?;
 
-            let ldtr_rights = {
-                let mut rights = SegmentRights(0);
+            let ldtr_right = {
+                let mut rights = SegmentRights::default();
                 rights.set_accessed(false);
                 rights.set_rw(true);
                 rights.set_dc(false);
@@ -280,9 +288,18 @@ impl VCpu {
                 rights.set_granularity_raw(Granularity::Byte as u8);
                 rights.set_long(false);
                 rights.set_db(false);
+
                 rights
             };
-            vmwrite(vmcs::guest::LDTR_ACCESS_RIGHTS, ldtr_rights.0 as u64)?;
+
+            vmwrite(vmcs::guest::CS_ACCESS_RIGHTS, cs_right.0 as u64)?;
+            vmwrite(vmcs::guest::SS_ACCESS_RIGHTS, ds_right.0 as u64)?;
+            vmwrite(vmcs::guest::DS_ACCESS_RIGHTS, ds_right.0 as u64)?;
+            vmwrite(vmcs::guest::ES_ACCESS_RIGHTS, ds_right.0 as u64)?;
+            vmwrite(vmcs::guest::FS_ACCESS_RIGHTS, ds_right.0 as u64)?;
+            vmwrite(vmcs::guest::GS_ACCESS_RIGHTS, ds_right.0 as u64)?;
+            vmwrite(vmcs::guest::TR_ACCESS_RIGHTS, tr_right.0 as u64)?;
+            vmwrite(vmcs::guest::LDTR_ACCESS_RIGHTS, ldtr_right.0 as u64)?;
 
             info!("RIP: {:#x}", Self::guest as u64);
             vmwrite(vmcs::guest::RIP, Self::guest as u64)?;
@@ -299,22 +316,40 @@ impl VCpu {
         self.vmcs.reset()
     }
 
-    fn guest_fn() -> ! {
-        loop {
-            unsafe {
-                halt();
-            }
-        }
-    }
-
     #[naked]
     unsafe extern "C" fn guest() -> ! {
-        naked_asm!("hlt");
-        //naked_asm!("call {guest_fn}", guest_fn = sym Self::guest_fn);
+        naked_asm!("2: hlt; jmp 2b");
     }
 
     fn vmexit_handler(&mut self) -> ! {
         info!("VMExit occurred");
+
+        let raw_info = unsafe { vmread(vmcs::ro::EXIT_REASON) }.unwrap();
+        info!("VMExit reason: {:#b}", raw_info);
+
+        let info = VmxExitInfo::read();
+
+        if info.entry_failure() {
+            let reason = info.0 & 0xFF;
+            match reason {
+                33 => {
+                    info!("    Reason: VM-entry failure due to invalid guest state");
+                }
+                34 => {
+                    info!("    Reason: VM-entry failure due to MSR loading");
+                }
+                41 => {
+                    info!("    Reason: VM-entry failure due to machine-check event");
+                }
+                _ => {}
+            }
+        } else {
+            info!(
+                "    Reason: {:?} ({})",
+                info.get_reason().as_str(),
+                info.basic_reason()
+            );
+        }
 
         loop {
             unsafe { halt() };

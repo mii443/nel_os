@@ -21,7 +21,10 @@ use nel_os::{
         vmcs::InstructionError,
     },
 };
-use x86::bits64::vmx;
+use x86::{
+    bits64::vmx::{self, vmread},
+    vmx::vmcs,
+};
 use x86_64::VirtAddr;
 
 #[cfg(not(test))]
@@ -62,6 +65,8 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
     info!("Starting the Virtual Machine...");
 
     unsafe {
+        asm!("cli");
+
         let vmlaunch = vmx::vmlaunch();
 
         info!("VMLaunch: {:?}", vmlaunch);
