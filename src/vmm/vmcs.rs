@@ -1,6 +1,6 @@
 #![allow(non_camel_case_types)]
 
-use bitfield::BitMut;
+use bitfield::{bitfield, BitMut};
 use x86::{bits64::vmx, vmx::VmFail};
 use x86_64::structures::paging::{FrameAllocator, PhysFrame};
 
@@ -171,38 +171,6 @@ impl PinBasedVmExecutionControls {
     }
 }
 
-/*
-
-   _reserved1: u2,
-   interrupt_window: bool,
-   tsc_offsetting: bool,
-   _reserved2: u3,
-   hlt: bool,
-   _reserved3: u1,
-   invlpg: bool,
-   mwait: bool,
-   rdpmc: bool,
-   rdtsc: bool,
-   _reserved4: u2,
-   cr3load: bool,
-   cr3store: bool,
-   activate_teritary_controls: bool,
-   _reserved: u1,
-   cr8load: bool,
-   cr8store: bool,
-   use_tpr_shadow: bool,
-   nmi_window: bool,
-   mov_dr: bool,
-   unconditional_io: bool,
-   use_io_bitmap: bool,
-   _reserved5: u1,
-   monitor_trap: bool,
-   use_msr_bitmap: bool,
-   monitor: bool,
-   pause: bool,
-   activate_secondary_controls: bool,
-*/
-
 pub struct PrimaryProcessorBasedVmExecutionControls(pub u32);
 
 impl PrimaryProcessorBasedVmExecutionControls {
@@ -220,6 +188,34 @@ impl PrimaryProcessorBasedVmExecutionControls {
             .write(self.0)
             .expect("Failed to write Primary Processor Based VM Execution Controls");
     }
+}
+
+pub enum DescriptorType {
+    System = 0,
+    Code = 1,
+}
+
+pub enum Granularity {
+    Byte = 0,
+    KByte = 1,
+}
+
+bitfield! {
+    pub struct SegmentRights(u32);
+    impl Debug;
+
+    pub accessed, set_accessed: 0;
+    pub rw, set_rw: 1;
+    pub dc, set_dc: 2;
+    pub executable, set_executable: 3;
+    pub u8, desc_type_raw, set_desc_type_raw: 4, 4;
+    pub u8, dpl, set_dpl: 6, 5;
+    pub present, set_present: 7;
+    pub avl, set_avl: 12;
+    pub long, set_long: 13;
+    pub u1, db, set_db: 14;
+    pub u8, granularity_raw, set_granularity_raw: 15, 15;
+    pub unusable, set_unusable: 16;
 }
 
 pub enum VmcsControl32 {
