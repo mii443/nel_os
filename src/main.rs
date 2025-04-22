@@ -9,6 +9,7 @@
 extern crate alloc;
 
 use bootloader::{entry_point, BootInfo};
+use core::arch::asm;
 use core::panic::PanicInfo;
 use nel_os::{
     allocator, info,
@@ -61,6 +62,7 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
     info!("vmlaunch...");
 
     unsafe {
+        asm!("cli");
         let vmlaunch = vmx::vmlaunch();
 
         if vmlaunch.is_err() {

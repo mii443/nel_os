@@ -255,6 +255,47 @@ impl EntryControls {
     }
 }
 
+bitfield! {
+    pub struct PrimaryExitControls(u32);
+    impl Debug;
+
+    pub save_debug, set_save_debug: 2;
+    pub host_addr_space_size, set_host_addr_space_size: 9;
+    pub load_perf_global_ctrl, set_load_perf_global_ctrl: 13;
+    pub ack_interrupt_onexit, set_ack_interrupt_onexit: 15;
+    pub save_ia32_pat, set_save_ia32_pat: 18;
+    pub load_ia32_pat, set_load_ia32_pat: 19;
+    pub save_ia32_efer, set_save_ia32_efer: 20;
+    pub load_ia32_efer, set_load_ia32_efer: 21;
+    pub save_vmx_preemption_timer, set_save_vmx_preemption_timer: 22;
+    pub clear_ia32_bndcfgs, set_clear_ia32_bndcfgs: 23;
+    pub conceal_vmx_from_pt, set_conceal_vmx_from_pt: 24;
+    pub clear_ia32_rtit_ctl, set_clear_ia32_rtit_ctl: 25;
+    pub clear_ia32_lbr_ctl, set_clear_ia32_lbr_ctl: 26;
+    pub clear_uinv, set_clear_uinv: 27;
+    pub load_cet_state, set_load_cet_state: 28;
+    pub load_pkrs, set_load_pkrs: 29;
+    pub save_perf_global_ctl, set_save_perf_global_ctl: 30;
+    pub activate_secondary_controls, set_activate_secondary_controls: 31;
+}
+
+impl PrimaryExitControls {
+    pub fn read() -> Self {
+        let err = VmcsControl32::PRIMARY_VM_EXIT_CONTROLS.read();
+        if err.is_err() {
+            panic!("Failed to read Primary VM Exit Controls");
+        }
+        let err = err.unwrap();
+        PrimaryExitControls(err)
+    }
+
+    pub fn write(&self) {
+        VmcsControl32::PRIMARY_VM_EXIT_CONTROLS
+            .write(self.0)
+            .expect("Failed to write Primary VM Exit Controls");
+    }
+}
+
 pub enum VmcsControl32 {
     PIN_BASED_VM_EXECUTION_CONTROLS = 0x00004000,
     PRIMARY_PROCESSOR_BASED_VM_EXECUTION_CONTROLS = 0x00004002,

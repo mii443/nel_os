@@ -47,6 +47,7 @@ impl VCpu {
         self.reset_vmcs().unwrap();
         self.setup_exec_ctrls().unwrap();
         self.setup_entry_ctrls().unwrap();
+        self.setup_exit_ctrls().unwrap();
         self.setup_host_state().unwrap();
         self.setup_guest_state().unwrap();
     }
@@ -100,6 +101,27 @@ impl VCpu {
         entry_ctrl.0 &= (reserved_bits >> 32) as u32;
 
         entry_ctrl.write();
+
+        Ok(())
+    }
+
+    pub fn setup_exit_ctrls(&mut self) -> Result<(), VmFail> {
+        info!("Setting up exit controls");
+
+        let basic_msr = unsafe { rdmsr(x86::msr::IA32_VMX_BASIC) };
+
+        let mut exit_ctrl = EntryControls::read();
+
+        let reserved_bits = if basic_msr & (1 << 55) != 0 {
+            unsafe { rdmsr(x86::msr::IA32_VMX_TRUE_EXIT_CTLS) }
+        } else {
+            unsafe { rdmsr(x86::msr::IA32_VMX_EXIT_CTLS) }
+        };
+
+        exit_ctrl.0 |= (reserved_bits & 0xFFFFFFFF) as u32;
+        exit_ctrl.0 &= (reserved_bits >> 32) as u32;
+
+        exit_ctrl.write();
 
         Ok(())
     }
