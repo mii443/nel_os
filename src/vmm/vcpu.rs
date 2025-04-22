@@ -3,7 +3,7 @@ use x86::{
     controlregs::{cr0, cr3, cr4},
     dtables::{self, DescriptorTablePointer},
     halt,
-    msr::{self, rdmsr, IA32_EFER, IA32_FS_BASE},
+    msr::{rdmsr, IA32_EFER, IA32_FS_BASE},
     vmx::{vmcs, VmFail},
 };
 
@@ -42,6 +42,7 @@ impl VCpu {
             .write_revision_id(revision_id, self.phys_mem_offset);
         self.reset_vmcs().unwrap();
         self.setup_exec_ctrls().unwrap();
+        self.setup_host_state().unwrap();
     }
 
     pub fn setup_exec_ctrls(&mut self) -> Result<(), VmFail> {
@@ -120,7 +121,7 @@ impl VCpu {
             vmwrite(vmcs::host::TR_SELECTOR, tr.bits() as u64)?;
             vmwrite(vmcs::host::TR_BASE, 0)?;
 
-            vmwrite(msr::IA32_EFER, rdmsr(IA32_EFER))?;
+            vmwrite(vmcs::host::IA32_EFER_FULL, rdmsr(IA32_EFER))?;
         }
         Ok(())
     }
