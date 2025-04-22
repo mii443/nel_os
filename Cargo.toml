@@ -27,7 +27,9 @@ run-args = [
   "none",
   "-cpu",
   "host",
-  "-enable-kvm"
+  "-enable-kvm",
+  "-monitor",
+  "telnet:127.0.0.1:5555,server,nowait"
 ]
 test-args = [
   "-device",

@@ -59,11 +59,12 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
     let mut vcpu = VCpu::new(phys_mem_offset.as_u64(), &mut frame_allocator);
     vcpu.activate();
 
-    info!("vmlaunch...");
+    info!("Starting the Virtual Machine...");
 
     unsafe {
-        asm!("cli");
         let vmlaunch = vmx::vmlaunch();
+
+        info!("VMLaunch: {:?}", vmlaunch);
 
         if vmlaunch.is_err() {
             let error = InstructionError::read();
