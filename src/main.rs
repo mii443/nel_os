@@ -5,11 +5,11 @@
 #![feature(naked_functions)]
 #![test_runner(nel_os::test_runner)]
 #![reexport_test_harness_main = "test_main"]
+#![allow(unreachable_code)]
 
 extern crate alloc;
 
 use bootloader::{entry_point, BootInfo};
-use core::arch::asm;
 use core::panic::PanicInfo;
 use nel_os::{
     allocator, info,
@@ -18,12 +18,7 @@ use nel_os::{
     vmm::{
         support::{has_intel_cpu, has_vmx_support},
         vcpu::VCpu,
-        vmcs::InstructionError,
     },
-};
-use x86::{
-    bits64::vmx::{self, vmread},
-    vmx::vmcs,
 };
 use x86_64::VirtAddr;
 
@@ -62,23 +57,8 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
     let mut vcpu = VCpu::new(phys_mem_offset.as_u64(), &mut frame_allocator);
     vcpu.activate();
 
-    info!("Starting the Virtual Machine...");
-
-    unsafe {
-        asm!("cli");
-
-        let vmlaunch = vmx::vmlaunch();
-
-        info!("VMLaunch: {:?}", vmlaunch);
-
-        if vmlaunch.is_err() {
-            let error = InstructionError::read();
-            let error = error.as_str();
-            info!("error: {}", error);
-        } else {
-            info!("vmlaunch success");
-        }
-    }
+    #[cfg(not(test))]
+    vcpu.vm_loop();
 
     #[cfg(test)]
     test_main();

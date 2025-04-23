@@ -1,4 +1,5 @@
 pub mod error;
+pub mod register;
 pub mod support;
 pub mod vcpu;
 pub mod vmcs;

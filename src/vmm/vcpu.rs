@@ -1,26 +1,29 @@
 use x86::{
-    bits64::vmx::{vmread, vmwrite},
+    bits64::vmx::vmwrite,
     controlregs::{cr0, cr3, cr4},
     dtables::{self, DescriptorTablePointer},
-    halt,
     msr::{rdmsr, IA32_EFER, IA32_FS_BASE},
     vmx::{vmcs, VmFail},
 };
 use x86_64::VirtAddr;
 
-use core::arch::{asm, naked_asm};
+use core::{
+    arch::{asm, naked_asm},
+    mem::offset_of,
+};
 
 use crate::{
     info,
     memory::BootInfoFrameAllocator,
     vmm::vmcs::{
         DescriptorType, EntryControls, Granularity, PrimaryExitControls,
-        PrimaryProcessorBasedVmExecutionControls, SegmentRights, VmxExitInfo,
+        PrimaryProcessorBasedVmExecutionControls, SegmentRights, VmxExitInfo, VmxExitReason,
     },
 };
 
 use super::{
-    vmcs::{PinBasedVmExecutionControls, Vmcs},
+    register::GuestRegisters,
+    vmcs::{InstructionError, PinBasedVmExecutionControls, Vmcs},
     vmxon::Vmxon,
 };
 
@@ -28,6 +31,8 @@ pub struct VCpu {
     pub vmxon: Vmxon,
     pub vmcs: Vmcs,
     pub phys_mem_offset: u64,
+    pub guest_registers: GuestRegisters,
+    pub launch_done: bool,
 }
 
 const TEMP_STACK_SIZE: usize = 4096;
@@ -42,6 +47,8 @@ impl VCpu {
             vmxon,
             vmcs,
             phys_mem_offset,
+            guest_registers: GuestRegisters::default(),
+            launch_done: false,
         }
     }
 
@@ -85,7 +92,7 @@ impl VCpu {
 
         primary_exec_ctrl.0 |= (reserved_bits & 0xFFFFFFFF) as u32;
         primary_exec_ctrl.0 &= (reserved_bits >> 32) as u32;
-        primary_exec_ctrl.set_hlt(false);
+        primary_exec_ctrl.set_hlt(true);
         primary_exec_ctrl.set_activate_secondary_controls(false);
 
         primary_exec_ctrl.write();
@@ -316,17 +323,141 @@ impl VCpu {
         self.vmcs.reset()
     }
 
+    pub fn vm_loop(&mut self) -> ! {
+        info!("Entering VM loop");
+
+        loop {
+            if let Err(err) = self.vmentry() {
+                info!("VMEntry failed: {}", err.as_str());
+            }
+
+            self.vmexit_handler();
+        }
+    }
+
+    fn vmentry(&mut self) -> Result<(), InstructionError> {
+        let success = {
+            let result: u16;
+            unsafe {
+                asm!(
+                    "mov {self}, rdi",
+                    "call {asm_vm_entry}",
+                    self = in(reg) self,
+                    asm_vm_entry = sym Self::asm_vm_entry,
+                    out("ax") result,
+                    clobber_abi("C"),
+                );
+            };
+            result == 0
+        };
+
+        self.launch_done = true;
+
+        if success {
+            let error = InstructionError::read();
+            if error.0 != 0 {
+                return Err(error);
+            }
+        }
+
+        Ok(())
+    }
+
+    unsafe extern "C" fn set_host_stack(rsp: u64) {
+        vmwrite(vmcs::host::RSP, rsp).unwrap();
+    }
+
+    #[naked]
+    unsafe extern "C" fn asm_vm_entry() -> u16 {
+        const GUEST_REGS_OFFSET: usize = offset_of!(VCpu, guest_registers);
+        const LAUNCH_DONE: usize = offset_of!(VCpu, launch_done);
+
+        const RAX_OFFSET: usize = offset_of!(GuestRegisters, rax);
+        const RCX_OFFSET: usize = offset_of!(GuestRegisters, rcx);
+        const RDX_OFFSET: usize = offset_of!(GuestRegisters, rdx);
+        const RBX_OFFSET: usize = offset_of!(GuestRegisters, rbx);
+        const RSI_OFFSET: usize = offset_of!(GuestRegisters, rsi);
+        const RDI_OFFSET: usize = offset_of!(GuestRegisters, rdi);
+        const RBP_OFFSET: usize = offset_of!(GuestRegisters, rbp);
+        const R8_OFFSET: usize = offset_of!(GuestRegisters, r8);
+        const R9_OFFSET: usize = offset_of!(GuestRegisters, r9);
+        const R10_OFFSET: usize = offset_of!(GuestRegisters, r10);
+        const R11_OFFSET: usize = offset_of!(GuestRegisters, r11);
+        const R12_OFFSET: usize = offset_of!(GuestRegisters, r12);
+        const R13_OFFSET: usize = offset_of!(GuestRegisters, r13);
+        const R14_OFFSET: usize = offset_of!(GuestRegisters, r14);
+        const R15_OFFSET: usize = offset_of!(GuestRegisters, r15);
+
+        naked_asm!(
+            "push rbp",
+            "push r15",
+            "push r14",
+            "push r13",
+            "push r12",
+            "push rbx",
+            "lea rbx, [rdi + {0}]",
+            "push rbx",
+            "push rdi",
+            "lea rdi, [rsp + 8]",
+            "call {set_host_stack}",
+            "pop rdi",
+            "test byte ptr [rdi + {1}], 1",
+            "mov rax, rdi",
+            "mov rcx, [rax+{2}]",
+            "mov rdx, [rax+{3}]",
+            "mov rbx, [rax+{4}]",
+            "mov rsi, [rax+{5}]",
+            "mov rdi, [rax+{6}]",
+            "mov rbp, [rax+{7}]",
+            "mov r8, [rax+{8}]",
+            "mov r9, [rax+{9}]",
+            "mov r10, [rax+{10}]",
+            "mov r11, [rax+{11}]",
+            "mov r12, [rax+{12}]",
+            "mov r13, [rax+{13}]",
+            "mov r14, [rax+{14}]",
+            "mov r15, [rax+{15}]",
+            "mov rax, [rax+{16}]",
+            "jz 2f",
+            "vmresume",
+            "2:",
+            "vmlaunch",
+            "mov ax, 1",
+            "add rsp, 8",
+            "pop rbx",
+            "pop r12",
+            "pop r13",
+            "pop r14",
+            "pop r15",
+            "pop rbp",
+            "ret",
+            const GUEST_REGS_OFFSET,
+            const LAUNCH_DONE,
+            const RCX_OFFSET,
+            const RDX_OFFSET,
+            const RBX_OFFSET,
+            const RSI_OFFSET,
+            const RDI_OFFSET,
+            const RBP_OFFSET,
+            const R8_OFFSET,
+            const R9_OFFSET,
+            const R10_OFFSET,
+            const R11_OFFSET,
+            const R12_OFFSET,
+            const R13_OFFSET,
+            const R14_OFFSET,
+            const R15_OFFSET,
+            const RAX_OFFSET,
+            set_host_stack = sym Self::set_host_stack,
+        );
+    }
+
     #[naked]
     unsafe extern "C" fn guest() -> ! {
         naked_asm!("2: hlt; jmp 2b");
     }
 
-    fn vmexit_handler(&mut self) -> ! {
-        info!("VMExit occurred");
-
-        let raw_info = unsafe { vmread(vmcs::ro::EXIT_REASON) }.unwrap();
-        info!("VMExit reason: {:#b}", raw_info);
-
+    fn vmexit_handler(&mut self) {
         let info = VmxExitInfo::read();
 
         if info.entry_failure() {
@@ -344,20 +475,78 @@ impl VCpu {
                 _ => {}
             }
         } else {
-            info!(
-                "    Reason: {:?} ({})",
-                info.get_reason().as_str(),
-                info.basic_reason()
-            );
-        }
-
-        loop {
-            unsafe { halt() };
+            match info.get_reason() {
+                VmxExitReason::HLT => {
+                    info!("HLT instruction executed");
+                }
+                _ => {
+                    panic!("VMExit reason: {:?}", info.get_reason());
+                }
+            }
         }
     }
 
     #[naked]
-    unsafe extern "C" fn vmexit(&mut self) -> ! {
-        naked_asm!("call {vmexit_handler}", vmexit_handler = sym Self::vmexit_handler);
+    unsafe extern "C" fn vmexit() -> ! {
+        const RAX_OFFSET: usize = offset_of!(GuestRegisters, rax);
+        const RCX_OFFSET: usize = offset_of!(GuestRegisters, rcx);
+        const RDX_OFFSET: usize = offset_of!(GuestRegisters, rdx);
+        const RBX_OFFSET: usize = offset_of!(GuestRegisters, rbx);
+        const RSI_OFFSET: usize = offset_of!(GuestRegisters, rsi);
+        const RDI_OFFSET: usize = offset_of!(GuestRegisters, rdi);
+        const RBP_OFFSET: usize = offset_of!(GuestRegisters, rbp);
+        const R8_OFFSET: usize = offset_of!(GuestRegisters, r8);
+        const R9_OFFSET: usize = offset_of!(GuestRegisters, r9);
+        const R10_OFFSET: usize = offset_of!(GuestRegisters, r10);
+        const R11_OFFSET: usize = offset_of!(GuestRegisters, r11);
+        const R12_OFFSET: usize = offset_of!(GuestRegisters, r12);
+        const R13_OFFSET: usize = offset_of!(GuestRegisters, r13);
+        const R14_OFFSET: usize = offset_of!(GuestRegisters, r14);
+        const R15_OFFSET: usize = offset_of!(GuestRegisters, r15);
+
+        naked_asm!(
+            "cli",
+            "push rax",
+            "mov rax, [rsp+8]",
+            "pop [rax+{0}]",
+            "add rsp, 8",
+            "mov [rax+{1}], rcx",
+            "mov [rax+{2}], rdx",
+            "mov [rax+{3}], rbx",
+            "mov [rax+{4}], rsi",
+            "mov [rax+{5}], rdi",
+            "mov [rax+{6}], rbp",
+            "mov [rax+{7}], r8",
+            "mov [rax+{8}], r9",
+            "mov [rax+{9}], r10",
+            "mov [rax+{10}], r11",
+            "mov [rax+{11}], r12",
+            "mov [rax+{12}], r13",
+            "mov [rax+{13}], r14",
+            "mov [rax+{14}], r15",
+            "pop rbx",
+            "pop r12",
+            "pop r13",
+            "pop r14",
+            "pop r15",
+            "pop rbp",
+            "mov rax, 1",
+            "ret",
+            const RAX_OFFSET,
+            const RCX_OFFSET,
+            const RDX_OFFSET,
+            const RBX_OFFSET,
+            const RSI_OFFSET,
+            const RDI_OFFSET,
+            const RBP_OFFSET,
+            const R8_OFFSET,
+            const R9_OFFSET,
+            const R10_OFFSET,
+            const R11_OFFSET,
+            const R12_OFFSET,
+            const R13_OFFSET,
+            const R14_OFFSET,
+            const R15_OFFSET,
+        )
     }
 }
