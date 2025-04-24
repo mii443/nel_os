@@ -351,9 +351,11 @@ impl VCpu {
             result == 0
         };
 
-        self.launch_done = true;
+        if !self.launch_done && success {
+            self.launch_done = true;
+        }
 
-        if success {
+        if !success {
             let error = InstructionError::read();
             if error.0 != 0 {
                 return Err(error);
@@ -530,7 +532,7 @@ impl VCpu {
             "pop r14",
             "pop r15",
             "pop rbp",
-            "mov rax, 1",
+            "mov rax, 0",
             "ret",
             const RAX_OFFSET,
             const RCX_OFFSET,
