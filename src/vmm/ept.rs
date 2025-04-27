@@ -1,9 +1,8 @@
-use core::sync::atomic::Ordering;
-
 use bitfield::bitfield;
-use x86_64::PhysAddr;
-
-use crate::memory;
+use x86_64::{
+    structures::paging::{OffsetPageTable, Translate},
+    PhysAddr, VirtAddr,
+};
 
 pub enum Assert<const CHECK: bool> {}
 
@@ -16,7 +15,10 @@ pub struct TableEntry<const LEVEL: u8> {
 }
 
 impl<const LEVEL: u8> TableEntry<LEVEL> {
-    pub fn new_map_table<const L: u8>(table: TableEntry<L>) -> Self
+    pub fn new_map_table<const L: u8>(
+        table: TableEntry<L>,
+        mapper: OffsetPageTable<'static>,
+    ) -> Self
     where
         Assert<{ LEVEL > L }>: IsTrue,
         Assert<{ L > 0 }>: IsTrue,
@@ -26,14 +28,17 @@ impl<const LEVEL: u8> TableEntry<LEVEL> {
         entry.set_map_memory(false);
         entry.set_typ(0);
         entry.set_phys(
-            (&table as *const _ as u64 + memory::PHYSICAL_MEMORY_OFFSET.load(Ordering::Relaxed))
+            (mapper
+                .translate_addr(VirtAddr::from_ptr(&table))
+                .unwrap()
+                .as_u64())
                 >> 12,
         );
 
         Self { entry }
     }
 
-    pub fn new_map_page<const L: u8>(phys: u64) -> Self
+    pub fn new_map_page<const L: u8>(phys: u64, mapper: OffsetPageTable<'static>) -> Self
     where
         Assert<{ L < 4 }>: IsTrue,
         Assert<{ L > 0 }>: IsTrue,
@@ -45,7 +50,12 @@ impl<const LEVEL: u8> TableEntry<LEVEL> {
         entry.set_exec_user(true);
         entry.set_map_memory(true);
         entry.set_typ(0);
-        entry.set_phys((phys + memory::PHYSICAL_MEMORY_OFFSET.load(Ordering::Relaxed)) >> 12);
+        entry.set_phys(
+            (mapper.translate_addr(VirtAddr::new(phys)))
+                .unwrap()
+                .as_u64()
+                >> 12,
+        );
 
         Self { entry }
     }
