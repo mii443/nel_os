@@ -3,6 +3,7 @@
 #![feature(custom_test_frameworks)]
 #![feature(new_zeroed_alloc)]
 #![feature(naked_functions)]
+#![feature(generic_const_exprs)]
 #![test_runner(nel_os::test_runner)]
 #![reexport_test_harness_main = "test_main"]
 #![allow(unreachable_code)]
@@ -10,7 +11,7 @@
 extern crate alloc;
 
 use bootloader::{entry_point, BootInfo};
-use core::panic::PanicInfo;
+use core::{panic::PanicInfo, sync::atomic::Ordering};
 use nel_os::{
     allocator, info,
     memory::{self, BootInfoFrameAllocator},
@@ -43,6 +44,9 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
     nel_os::init();
 
     let phys_mem_offset = VirtAddr::new(boot_info.physical_memory_offset);
+
+    memory::PHYSICAL_MEMORY_OFFSET.store(phys_mem_offset.as_u64(), Ordering::Relaxed);
+
     let mut mapper = unsafe { memory::init(phys_mem_offset) };
     let mut frame_allocator = unsafe { BootInfoFrameAllocator::init(&boot_info.memory_map) };
 

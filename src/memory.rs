@@ -1,8 +1,12 @@
+use core::sync::atomic::AtomicU64;
+
 use bootloader::bootinfo::{MemoryMap, MemoryRegionType};
 use x86_64::{
     structures::paging::{FrameAllocator, OffsetPageTable, PageTable, PhysFrame, Size4KiB},
     PhysAddr, VirtAddr,
 };
+
+pub static PHYSICAL_MEMORY_OFFSET: AtomicU64 = AtomicU64::new(0);
 
 pub struct BootInfoFrameAllocator {
     memory_map: &'static MemoryMap,
