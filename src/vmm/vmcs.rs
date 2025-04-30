@@ -219,6 +219,60 @@ impl PrimaryProcessorBasedVmExecutionControls {
     }
 }
 
+bitfield! {
+    pub struct SecondaryProcessorBasedVmExecutionControls(u32);
+    impl Debug;
+
+    pub virtualize_apic_accesses, set_virtualize_apic_accesses: 0;
+    pub ept, set_ept: 1;
+    pub descriptor_table, set_descriptor_table: 2;
+    pub rdtscp, set_rdtscp: 3;
+    pub virtualize_x2apic_mode, set_virtualize_x2apic_mode: 4;
+    pub vpid, set_vpid: 5;
+    pub wbinvd, set_wbinvd: 6;
+    pub unrestricted_guest, set_unrestricted_guest: 7;
+    pub apic_register_virtualization, set_apic_register_virtualization: 8;
+    pub virtual_interrupt_delivery, set_virtual_interrupt_delivery: 9;
+    pub pause_loop, set_pause_loop: 10;
+    pub rdrand, set_rdrand: 11;
+    pub enable_invpcid, set_enable_invpcid: 12;
+    pub enable_vmfunc, set_enable_vmfunc: 13;
+    pub vmcs_shadowing, set_vmcs_shadowing: 14;
+    pub enable_encls, set_enable_encls: 15;
+    pub rdseed, set_rdseed: 16;
+    pub enable_pml, set_enable_pml: 17;
+    pub ept_violation, set_ept_violation: 18;
+    pub conceal_vmx_from_pt, set_conceal_vmx_from_pt: 19;
+    pub enable_xsaves_xrstors, set_enable_xsaves_xrstors: 20;
+    pub pasid_translation, set_pasid_translation: 21;
+    pub mode_based_control_ept, set_mode_based_control_ept: 22;
+    pub subpage_write_eptr, set_subpage_write_eptr: 23;
+    pub pt_guest_pa, set_pt_guest_pa: 24;
+    pub tsc_scaling, set_tsc_scaling: 25;
+    pub enable_user_wait_pause, set_enable_user_wait_pause: 26;
+    pub enable_pconfig, set_enable_pconfig: 27;
+    pub enable_enclv, set_enable_enclv: 28;
+    pub vmm_buslock_detect, set_vmm_buslock_detect: 29;
+    pub instruction_timeout, set_instruction_timeout: 30;
+}
+
+impl SecondaryProcessorBasedVmExecutionControls {
+    pub fn read() -> Self {
+        let err = VmcsControl32::SECONDARY_PROCESSOR_BASED_VM_EXECUTION_CONTROLS.read();
+        if err.is_err() {
+            panic!("Failed to read Secondary Processor Based VM Execution Controls");
+        }
+        let err = err.unwrap();
+        SecondaryProcessorBasedVmExecutionControls(err)
+    }
+
+    pub fn write(&self) {
+        VmcsControl32::SECONDARY_PROCESSOR_BASED_VM_EXECUTION_CONTROLS
+            .write(self.0)
+            .expect("Failed to write Secondary Processor Based VM Execution Controls");
+    }
+}
+
 pub enum DescriptorType {
     System = 0,
     Code = 1,

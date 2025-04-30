@@ -26,6 +26,8 @@ run-args = [
   "stdio",
   "-display",
   "none",
+  "-m",
+  "512M",
   "-cpu",
   "host",
   "-enable-kvm",

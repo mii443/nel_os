@@ -7,11 +7,10 @@ use x86_64::{
     PhysAddr,
 };
 
-use crate::memory;
+use crate::{info, memory};
 
 pub struct EPT {
     pub root_table: PhysFrame,
-    pub tables: Vec<PhysFrame>,
 }
 
 impl EPT {
@@ -22,7 +21,6 @@ impl EPT {
 
         Self {
             root_table: root_frame,
-            tables: Vec::new(),
         }
     }
 
@@ -48,7 +46,7 @@ impl EPT {
         unsafe { &mut *(table_ptr as *mut [EntryBase; 512]) }
     }
 
-    fn map_2m(
+    pub fn map_2m(
         &mut self,
         gpa: u64,
         hpa: u64,
@@ -69,7 +67,6 @@ impl EPT {
             lv4_entry.set_phys(frame.start_address().as_u64() >> 12);
             lv4_entry.set_map_memory(false);
             lv4_entry.set_typ(0);
-            self.tables.push(frame);
             table_ptr
         } else {
             let frame =
@@ -87,7 +84,6 @@ impl EPT {
             lv3_entry.set_phys(frame.start_address().as_u64() >> 12);
             lv3_entry.set_map_memory(false);
             lv3_entry.set_typ(0);
-            self.tables.push(frame);
             table_ptr
         } else {
             let frame =
@@ -98,8 +94,35 @@ impl EPT {
         let lv2_entry = &mut lv2_table[lv2_index as usize];
         lv2_entry.set_phys(hpa >> 12);
         lv2_entry.set_map_memory(true);
+        info!("{:#x}", lv2_entry as *const _ as u64);
 
         Ok(())
+    }
+
+    pub fn get_phys_addr(&self, gpa: u64) -> Option<u64> {
+        let lv4_index = (gpa >> 39) & 0x1FF;
+        let lv3_index = (gpa >> 30) & 0x1FF;
+        let lv2_index = (gpa >> 21) & 0x1FF;
+
+        let lv4_table = Self::frame_to_table_ptr(&self.root_table);
+        let lv4_entry = &lv4_table[lv4_index as usize];
+
+        let frame = PhysFrame::from_start_address(PhysAddr::new(lv4_entry.phys() << 12)).unwrap();
+        let lv3_table = Self::frame_to_table_ptr(&frame);
+        let lv3_entry = &lv3_table[lv3_index as usize];
+
+        let frame = PhysFrame::from_start_address(PhysAddr::new(lv3_entry.phys() << 12)).unwrap();
+        let lv2_table = Self::frame_to_table_ptr(&frame);
+        let lv2_entry = &lv2_table[lv2_index as usize];
+
+        if !lv2_entry.map_memory() {
+            info!("EPT: No mapping found for GPA: {:#x}", gpa);
+            info!("{:#x}", lv2_entry.address().as_u64());
+            info!("{:#x}", lv2_entry as *const _ as u64);
+            return None;
+        }
+
+        Some(lv2_entry.address().as_u64())
     }
 }
 

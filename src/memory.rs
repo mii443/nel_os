@@ -28,6 +28,44 @@ impl BootInfoFrameAllocator {
         let frame_addresses = addr_ranges.flat_map(|r| r.step_by(4096));
         frame_addresses.map(|addr| PhysFrame::containing_address(PhysAddr::new(addr)))
     }
+
+    pub fn allocate_2mib_aligned(&mut self) -> Option<PhysAddr> {
+        self.allocate_2mib_frame()
+            .map(|frame| frame.start_address())
+    }
+
+    pub fn allocate_2mib_frame(&mut self) -> Option<PhysFrame<Size4KiB>> {
+        let mut frames = self.usable_frames().skip(self.next);
+
+        let base_frame = frames.find(|frame| frame.start_address().as_u64() & 0x1F_FFFF == 0)?;
+
+        let base_idx = self.next
+            + frames
+                .enumerate()
+                .find(|(_, frame)| frame.start_address() == base_frame.start_address())
+                .map(|(idx, _)| idx)
+                .unwrap_or(0);
+
+        let frame_count = 512;
+        let frames_are_available = self
+            .usable_frames()
+            .skip(base_idx)
+            .take(frame_count)
+            .enumerate()
+            .all(|(idx, frame)| {
+                let expected_addr = base_frame.start_address().as_u64() + (idx as u64 * 4096);
+                frame.start_address().as_u64() == expected_addr
+            });
+
+        if !frames_are_available {
+            self.next = base_idx + 1;
+            return self.allocate_2mib_frame();
+        }
+
+        self.next = base_idx + frame_count;
+
+        Some(base_frame)
+    }
 }
 
 unsafe impl FrameAllocator<Size4KiB> for BootInfoFrameAllocator {

@@ -1,6 +1,6 @@
 use x86::{
     bits64::vmx::vmwrite,
-    controlregs::{cr0, cr3, cr4},
+    controlregs::{cr0, cr3, cr4, Cr0},
     dtables::{self, DescriptorTablePointer},
     msr::{rdmsr, IA32_EFER, IA32_FS_BASE},
     vmx::{vmcs, VmFail},
@@ -17,11 +17,13 @@ use crate::{
     memory::BootInfoFrameAllocator,
     vmm::vmcs::{
         DescriptorType, EntryControls, Granularity, PrimaryExitControls,
-        PrimaryProcessorBasedVmExecutionControls, SegmentRights, VmxExitInfo, VmxExitReason,
+        PrimaryProcessorBasedVmExecutionControls, SecondaryProcessorBasedVmExecutionControls,
+        SegmentRights, VmxExitInfo, VmxExitReason,
     },
 };
 
 use super::{
+    ept::{EPT, EPTP},
     register::GuestRegisters,
     vmcs::{InstructionError, PinBasedVmExecutionControls, Vmcs},
     vmxon::Vmxon,
@@ -33,6 +35,8 @@ pub struct VCpu {
     pub phys_mem_offset: u64,
     pub guest_registers: GuestRegisters,
     pub launch_done: bool,
+    pub ept: EPT,
+    pub eptp: EPTP,
 }
 
 const TEMP_STACK_SIZE: usize = 4096;
@@ -43,16 +47,21 @@ impl VCpu {
         let mut vmxon = Vmxon::new(frame_allocator);
         vmxon.init(phys_mem_offset);
         let vmcs = Vmcs::new(frame_allocator);
+        let ept = EPT::new(frame_allocator);
+        let eptp = EPTP::new(&ept.root_table);
+
         VCpu {
             vmxon,
             vmcs,
             phys_mem_offset,
             guest_registers: GuestRegisters::default(),
             launch_done: false,
+            ept,
+            eptp,
         }
     }
 
-    pub fn activate(&mut self) {
+    pub fn activate(&mut self, frame_allocator: &mut BootInfoFrameAllocator) {
         self.vmxon.activate_vmxon().unwrap();
 
         let revision_id = unsafe { rdmsr(x86::msr::IA32_VMX_BASIC) } as u32;
@@ -64,10 +73,32 @@ impl VCpu {
         self.setup_exit_ctrls().unwrap();
         self.setup_host_state().unwrap();
         self.setup_guest_state().unwrap();
+        self.setup_guest_memory(frame_allocator);
+    }
+
+    pub fn setup_guest_memory(&mut self, frame_allocator: &mut BootInfoFrameAllocator) {
+        let mut pages = 50;
+        let mut gpa = 0;
+
+        info!("Setting up guest memory...");
+        while pages > 0 {
+            let frame = frame_allocator
+                .allocate_2mib_frame()
+                .expect("Failed to allocate frame");
+            let hpa = frame.start_address().as_u64();
+
+            self.ept.map_2m(gpa, hpa, frame_allocator).unwrap();
+            gpa += (4 * 1024) << 9;
+            pages -= 1;
+        }
+        info!("Guest memory setup complete");
+
+        let eptp = EPTP::new(&self.ept.root_table);
+        unsafe { vmwrite(vmcs::control::EPTP_FULL, eptp.0).unwrap() };
     }
 
     pub fn setup_exec_ctrls(&mut self) -> Result<(), VmFail> {
-        info!("Setting up execution controls");
+        info!("Setting up pin based execution controls");
         let basic_msr = unsafe { rdmsr(x86::msr::IA32_VMX_BASIC) };
         let mut pin_exec_ctrl = PinBasedVmExecutionControls::read();
 
@@ -82,6 +113,8 @@ impl VCpu {
 
         pin_exec_ctrl.write();
 
+        info!("Setting up primary execution controls");
+
         let mut primary_exec_ctrl = PrimaryProcessorBasedVmExecutionControls::read();
 
         let reserved_bits = if basic_msr & (1 << 55) != 0 {
@@ -92,10 +125,27 @@ impl VCpu {
 
         primary_exec_ctrl.0 |= (reserved_bits & 0xFFFFFFFF) as u32;
         primary_exec_ctrl.0 &= (reserved_bits >> 32) as u32;
-        primary_exec_ctrl.set_hlt(true);
-        primary_exec_ctrl.set_activate_secondary_controls(false);
+        primary_exec_ctrl.set_hlt(false);
+        primary_exec_ctrl.set_activate_secondary_controls(true);
 
         primary_exec_ctrl.write();
+
+        info!("Setting up secondary execution controls");
+
+        let mut secondary_exec_ctrl = SecondaryProcessorBasedVmExecutionControls::read();
+
+        let reserved_bits = if basic_msr & (1 << 55) != 0 {
+            unsafe { rdmsr(x86::msr::IA32_VMX_PROCBASED_CTLS2) }
+        } else {
+            0
+        };
+
+        secondary_exec_ctrl.0 |= (reserved_bits & 0xFFFFFFFF) as u32;
+        secondary_exec_ctrl.0 &= (reserved_bits >> 32) as u32;
+        secondary_exec_ctrl.set_ept(true);
+        secondary_exec_ctrl.set_unrestricted_guest(true);
+
+        secondary_exec_ctrl.write();
 
         Ok(())
     }
@@ -115,7 +165,7 @@ impl VCpu {
 
         entry_ctrl.0 |= (reserved_bits & 0xFFFFFFFF) as u32;
         entry_ctrl.0 &= (reserved_bits >> 32) as u32;
-        entry_ctrl.set_ia32e_mode_guest(true);
+        entry_ctrl.set_ia32e_mode_guest(false);
 
         entry_ctrl.write();
 
@@ -204,7 +254,10 @@ impl VCpu {
         info!("Setting up guest state");
 
         unsafe {
-            vmwrite(vmcs::guest::CR0, cr0().bits() as u64)?;
+            let cr0 = Cr0::empty()
+                | Cr0::CR0_PROTECTED_MODE
+                | Cr0::CR0_NUMERIC_ERROR & !Cr0::CR0_ENABLE_PAGING;
+            vmwrite(vmcs::guest::CR0, cr0.bits() as u64)?;
             vmwrite(vmcs::guest::CR3, cr3())?;
             vmwrite(vmcs::guest::CR4, cr4().bits() as u64)?;
 
@@ -325,6 +378,13 @@ impl VCpu {
 
     pub fn vm_loop(&mut self) -> ! {
         info!("Entering VM loop");
+
+        let guest_ptr = Self::guest as u64;
+        let guest_addr = 0x18000801000u64; //self.ept.get_phys_addr(0).unwrap();
+        unsafe {
+            core::ptr::copy_nonoverlapping(guest_ptr as *const u8, guest_addr as *mut u8, 200);
+            vmwrite(vmcs::guest::RIP, 0).unwrap();
+        }
 
         loop {
             if let Err(err) = self.vmentry() {
