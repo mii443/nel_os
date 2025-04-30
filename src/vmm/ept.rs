@@ -1,6 +1,5 @@
 use core::sync::atomic::Ordering;
 
-use alloc::vec::Vec;
 use bitfield::bitfield;
 use x86_64::{
     structures::paging::{FrameAllocator, PhysFrame, Size4KiB},
@@ -67,6 +66,9 @@ impl EPT {
             lv4_entry.set_phys(frame.start_address().as_u64() >> 12);
             lv4_entry.set_map_memory(false);
             lv4_entry.set_typ(0);
+            lv4_entry.set_read(true);
+            lv4_entry.set_write(true);
+            lv4_entry.set_exec_super(true);
             table_ptr
         } else {
             let frame =
@@ -84,6 +86,9 @@ impl EPT {
             lv3_entry.set_phys(frame.start_address().as_u64() >> 12);
             lv3_entry.set_map_memory(false);
             lv3_entry.set_typ(0);
+            lv3_entry.set_read(true);
+            lv3_entry.set_write(true);
+            lv3_entry.set_exec_super(true);
             table_ptr
         } else {
             let frame =
@@ -94,6 +99,10 @@ impl EPT {
         let lv2_entry = &mut lv2_table[lv2_index as usize];
         lv2_entry.set_phys(hpa >> 12);
         lv2_entry.set_map_memory(true);
+        lv2_entry.set_typ(0);
+        lv2_entry.set_read(true);
+        lv2_entry.set_write(true);
+        lv2_entry.set_exec_super(true);
         info!("{:#x}", lv2_entry as *const _ as u64);
 
         Ok(())

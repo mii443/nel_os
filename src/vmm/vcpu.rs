@@ -10,11 +10,12 @@ use x86_64::VirtAddr;
 use core::{
     arch::{asm, naked_asm},
     mem::offset_of,
+    sync::atomic::Ordering,
 };
 
 use crate::{
     info,
-    memory::BootInfoFrameAllocator,
+    memory::{self, BootInfoFrameAllocator},
     vmm::vmcs::{
         DescriptorType, EntryControls, Granularity, PrimaryExitControls,
         PrimaryProcessorBasedVmExecutionControls, SecondaryProcessorBasedVmExecutionControls,
@@ -380,7 +381,8 @@ impl VCpu {
         info!("Entering VM loop");
 
         let guest_ptr = Self::guest as u64;
-        let guest_addr = self.ept.get_phys_addr(0).unwrap();
+        let guest_addr = self.ept.get_phys_addr(0).unwrap()
+            + memory::PHYSICAL_MEMORY_OFFSET.load(Ordering::Relaxed);
         unsafe {
             core::ptr::copy_nonoverlapping(guest_ptr as *const u8, guest_addr as *mut u8, 200);
             vmwrite(vmcs::guest::RIP, 0).unwrap();
