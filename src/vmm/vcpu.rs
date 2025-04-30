@@ -380,7 +380,7 @@ impl VCpu {
         info!("Entering VM loop");
 
         let guest_ptr = Self::guest as u64;
-        let guest_addr = 0x18000801000u64; //self.ept.get_phys_addr(0).unwrap();
+        let guest_addr = self.ept.get_phys_addr(0).unwrap();
         unsafe {
             core::ptr::copy_nonoverlapping(guest_ptr as *const u8, guest_addr as *mut u8, 200);
             vmwrite(vmcs::guest::RIP, 0).unwrap();
