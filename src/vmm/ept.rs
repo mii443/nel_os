@@ -1,70 +1,138 @@
+use core::sync::atomic::Ordering;
+
+use alloc::vec::Vec;
 use bitfield::bitfield;
 use x86_64::{
-    structures::paging::{OffsetPageTable, Translate},
-    PhysAddr, VirtAddr,
+    structures::paging::{FrameAllocator, PhysFrame, Size4KiB},
+    PhysAddr,
 };
 
-pub enum Assert<const CHECK: bool> {}
+use crate::memory;
 
-pub trait IsTrue {}
-
-impl IsTrue for Assert<true> {}
-
-pub struct TableEntry<const LEVEL: u8> {
-    pub entry: EntryBase,
+pub struct EPT {
+    pub root_table: PhysFrame,
+    pub tables: Vec<PhysFrame>,
 }
 
-impl<const LEVEL: u8> TableEntry<LEVEL> {
-    pub fn new_map_table<const L: u8>(
-        table: TableEntry<L>,
-        mapper: OffsetPageTable<'static>,
-    ) -> Self
-    where
-        Assert<{ LEVEL > L }>: IsTrue,
-        Assert<{ L > 0 }>: IsTrue,
-        Assert<{ LEVEL < 5 }>: IsTrue,
-    {
-        let mut entry = EntryBase::default();
-        entry.set_map_memory(false);
-        entry.set_typ(0);
-        entry.set_phys(
-            (mapper
-                .translate_addr(VirtAddr::from_ptr(&table))
-                .unwrap()
-                .as_u64())
-                >> 12,
-        );
+impl EPT {
+    pub fn new(allocator: &mut impl FrameAllocator<Size4KiB>) -> Self {
+        let root_frame = allocator.allocate_frame().unwrap();
 
-        Self { entry }
+        _ = Self::init_table(&root_frame);
+
+        Self {
+            root_table: root_frame,
+            tables: Vec::new(),
+        }
     }
 
-    pub fn new_map_page<const L: u8>(phys: u64, mapper: OffsetPageTable<'static>) -> Self
-    where
-        Assert<{ L < 4 }>: IsTrue,
-        Assert<{ L > 0 }>: IsTrue,
-    {
-        let mut entry = EntryBase::default();
-        entry.set_read(true);
-        entry.set_write(true);
-        entry.set_exec_super(true);
-        entry.set_exec_user(true);
-        entry.set_map_memory(true);
-        entry.set_typ(0);
-        entry.set_phys(
-            (mapper.translate_addr(VirtAddr::new(phys)))
-                .unwrap()
-                .as_u64()
-                >> 12,
-        );
+    fn frame_to_table_ptr(frame: &PhysFrame) -> &'static mut [EntryBase; 512] {
+        let phys_addr_offset = memory::PHYSICAL_MEMORY_OFFSET.load(Ordering::Relaxed);
+        let table_ptr = frame.start_address().as_u64() + phys_addr_offset;
 
-        Self { entry }
+        unsafe { &mut *(table_ptr as *mut [EntryBase; 512]) }
+    }
+
+    fn init_table(frame: &PhysFrame) -> &'static mut [EntryBase; 512] {
+        let phys_addr_offset = memory::PHYSICAL_MEMORY_OFFSET.load(Ordering::Relaxed);
+        let table_ptr = frame.start_address().as_u64() + phys_addr_offset;
+
+        for entry in unsafe { &mut *(table_ptr as *mut [EntryBase; 512]) } {
+            entry.set_read(false);
+            entry.set_write(false);
+            entry.set_exec_super(false);
+            entry.set_map_memory(false);
+            entry.set_typ(0);
+        }
+
+        unsafe { &mut *(table_ptr as *mut [EntryBase; 512]) }
+    }
+
+    fn map_2m(
+        &mut self,
+        gpa: u64,
+        hpa: u64,
+        allocator: &mut impl FrameAllocator<Size4KiB>,
+    ) -> Result<(), &'static str> {
+        let lv4_index = (gpa >> 39) & 0x1FF;
+        let lv3_index = (gpa >> 30) & 0x1FF;
+        let lv2_index = (gpa >> 21) & 0x1FF;
+
+        let lv4_table = Self::frame_to_table_ptr(&self.root_table);
+        let lv4_entry = &mut lv4_table[lv4_index as usize];
+
+        let lv3_table = if !lv4_entry.present() {
+            let frame = allocator
+                .allocate_frame()
+                .ok_or("Failed to allocate frame")?;
+            let table_ptr = Self::init_table(&frame);
+            lv4_entry.set_phys(frame.start_address().as_u64() >> 12);
+            lv4_entry.set_map_memory(false);
+            lv4_entry.set_typ(0);
+            self.tables.push(frame);
+            table_ptr
+        } else {
+            let frame =
+                PhysFrame::from_start_address(PhysAddr::new(lv4_entry.phys() << 12)).unwrap();
+            Self::frame_to_table_ptr(&frame)
+        };
+
+        let lv3_entry = &mut lv3_table[lv3_index as usize];
+
+        let lv2_table = if !lv3_entry.present() {
+            let frame = allocator
+                .allocate_frame()
+                .ok_or("Failed to allocate frame")?;
+            let table_ptr = Self::init_table(&frame);
+            lv3_entry.set_phys(frame.start_address().as_u64() >> 12);
+            lv3_entry.set_map_memory(false);
+            lv3_entry.set_typ(0);
+            self.tables.push(frame);
+            table_ptr
+        } else {
+            let frame =
+                PhysFrame::from_start_address(PhysAddr::new(lv3_entry.phys() << 12)).unwrap();
+            Self::frame_to_table_ptr(&frame)
+        };
+
+        let lv2_entry = &mut lv2_table[lv2_index as usize];
+        lv2_entry.set_phys(hpa >> 12);
+        lv2_entry.set_map_memory(true);
+
+        Ok(())
     }
 }
 
-pub type Lv4Entry = TableEntry<4>;
-pub type Lv3Entry = TableEntry<3>;
-pub type Lv2Entry = TableEntry<2>;
-pub type Lv1Entry = TableEntry<1>;
+bitfield! {
+    pub struct EPTP(u64);
+    impl Debug;
+
+    pub typ, set_typ: 2, 0;
+    pub level, set_level: 5, 3;
+    pub dirty_accessed, set_dirty_accessed: 6;
+    pub enforce_access_rights, set_enforce_access_rights: 7;
+    pub phys, set_phys: 63, 12;
+}
+
+impl EPTP {
+    pub fn new(lv4_table: &PhysFrame) -> Self {
+        let mut eptp = EPTP(0);
+        eptp.set_typ(6);
+        eptp.set_level(3);
+        eptp.set_dirty_accessed(true);
+        eptp.set_enforce_access_rights(false);
+        eptp.set_phys(lv4_table.start_address().as_u64() >> 12);
+
+        eptp
+    }
+
+    pub fn get_lv4_table(&self) -> &mut [EntryBase; 512] {
+        let phys_addr_offset = memory::PHYSICAL_MEMORY_OFFSET.load(Ordering::Relaxed);
+        let table_ptr = (self.phys() << 12) + phys_addr_offset;
+
+        unsafe { &mut *(table_ptr as *mut [EntryBase; 512]) }
+    }
+}
 
 bitfield! {
     pub struct EntryBase(u64);
