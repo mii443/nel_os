@@ -445,7 +445,7 @@ impl VCpu {
         vmwrite(vmcs::host::RSP, rsp).unwrap();
     }
 
-    #[naked]
+    #[unsafe(naked)]
     unsafe extern "C" fn asm_vm_entry_resume() -> u16 {
         const GUEST_REGS_OFFSET: usize = offset_of!(VCpu, guest_registers);
 
@@ -524,7 +524,7 @@ impl VCpu {
         );
     }
 
-    #[naked]
+    #[unsafe(naked)]
     unsafe extern "C" fn asm_vm_entry() -> u16 {
         const GUEST_REGS_OFFSET: usize = offset_of!(VCpu, guest_registers);
         const LAUNCH_DONE: usize = offset_of!(VCpu, launch_done);
@@ -609,7 +609,7 @@ impl VCpu {
         );
     }
 
-    #[naked]
+    #[unsafe(naked)]
     unsafe extern "C" fn guest() -> ! {
         naked_asm!("2: hlt; jmp 2b");
     }
@@ -643,7 +643,7 @@ impl VCpu {
         }
     }
 
-    #[naked]
+    #[unsafe(naked)]
     unsafe extern "C" fn vmexit() -> ! {
         const RAX_OFFSET: usize = offset_of!(GuestRegisters, rax);
         const RCX_OFFSET: usize = offset_of!(GuestRegisters, rcx);
