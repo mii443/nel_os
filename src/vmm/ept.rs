@@ -103,7 +103,6 @@ impl EPT {
         lv2_entry.set_read(true);
         lv2_entry.set_write(true);
         lv2_entry.set_exec_super(true);
-        info!("{:#x}", lv2_entry as *const _ as u64);
 
         Ok(())
     }
