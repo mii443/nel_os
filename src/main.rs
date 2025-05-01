@@ -3,7 +3,6 @@
 #![feature(custom_test_frameworks)]
 #![feature(new_zeroed_alloc)]
 #![feature(naked_functions)]
-#![feature(generic_const_exprs)]
 #![test_runner(nel_os::test_runner)]
 #![reexport_test_harness_main = "test_main"]
 #![allow(unreachable_code)]
