@@ -1,3 +1,4 @@
+pub mod asm;
 pub mod ept;
 pub mod error;
 pub mod linux;

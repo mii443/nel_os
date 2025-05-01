@@ -7,11 +7,7 @@ use x86::{
 };
 use x86_64::VirtAddr;
 
-use core::{
-    arch::{asm, naked_asm},
-    mem::offset_of,
-    sync::atomic::Ordering,
-};
+use core::sync::atomic::Ordering;
 
 use crate::{
     info,
@@ -203,7 +199,7 @@ impl VCpu {
             vmwrite(vmcs::host::CR3, cr3())?;
             vmwrite(vmcs::host::CR4, cr4().bits() as u64)?;
 
-            vmwrite(vmcs::host::RIP, Self::vmexit as u64)?;
+            vmwrite(vmcs::host::RIP, crate::vmm::asm::vmexit_handler_asm as u64)?;
             vmwrite(
                 vmcs::host::RSP,
                 VirtAddr::from_ptr(&raw mut TEMP_STACK).as_u64() + TEMP_STACK_SIZE as u64,
@@ -362,8 +358,6 @@ impl VCpu {
             vmwrite(vmcs::guest::TR_ACCESS_RIGHTS, tr_right.0 as u64)?;
             vmwrite(vmcs::guest::LDTR_ACCESS_RIGHTS, ldtr_right.0 as u64)?;
 
-            info!("RIP: {:#x}", Self::guest as u64);
-            vmwrite(vmcs::guest::RIP, Self::guest as u64)?;
             vmwrite(vmcs::guest::IA32_EFER_FULL, rdmsr(IA32_EFER))?;
             vmwrite(vmcs::guest::RFLAGS, 0x2)?;
             vmwrite(vmcs::guest::LINK_PTR_FULL, u64::MAX)?;
@@ -380,7 +374,7 @@ impl VCpu {
     pub fn vm_loop(&mut self) -> ! {
         info!("Entering VM loop");
 
-        let guest_ptr = Self::guest as u64;
+        let guest_ptr = crate::vmm::asm::guest_entry as u64;
         let guest_addr = self.ept.get_phys_addr(0).unwrap()
             + memory::PHYSICAL_MEMORY_OFFSET.load(Ordering::Relaxed);
         unsafe {
@@ -402,26 +396,12 @@ impl VCpu {
             let result: u16;
             if !self.launch_done {
                 unsafe {
-                    asm!(
-                        "mov {self}, rdi",
-                        "call {asm_vm_entry}",
-                        self = in(reg) self,
-                        asm_vm_entry = sym Self::asm_vm_entry,
-                        out("ax") result,
-                        clobber_abi("C"),
-                    );
+                    result = crate::vmm::asm::asm_vm_entry(self as *mut _);
                 };
                 result == 0
             } else {
                 unsafe {
-                    asm!(
-                        "mov {self}, rdi",
-                        "call {asm_vm_entry_resume}",
-                        self = in(reg) self,
-                        asm_vm_entry_resume = sym Self::asm_vm_entry_resume,
-                        out("ax") result,
-                        clobber_abi("C"),
-                    );
+                    result = crate::vmm::asm::asm_vm_entry_resume(self as *mut _);
                 };
                 result == 0
             }
@@ -441,174 +421,9 @@ impl VCpu {
         Ok(())
     }
 
+    #[no_mangle]
     unsafe extern "C" fn set_host_stack(rsp: u64) {
         vmwrite(vmcs::host::RSP, rsp).unwrap();
-    }
-
-    #[unsafe(naked)]
-    unsafe extern "C" fn asm_vm_entry_resume() -> u16 {
-        const GUEST_REGS_OFFSET: usize = offset_of!(VCpu, guest_registers);
-
-        const RAX_OFFSET: usize = offset_of!(GuestRegisters, rax);
-        const RCX_OFFSET: usize = offset_of!(GuestRegisters, rcx);
-        const RDX_OFFSET: usize = offset_of!(GuestRegisters, rdx);
-        const RBX_OFFSET: usize = offset_of!(GuestRegisters, rbx);
-        const RSI_OFFSET: usize = offset_of!(GuestRegisters, rsi);
-        const RDI_OFFSET: usize = offset_of!(GuestRegisters, rdi);
-        const RBP_OFFSET: usize = offset_of!(GuestRegisters, rbp);
-        const R8_OFFSET: usize = offset_of!(GuestRegisters, r8);
-        const R9_OFFSET: usize = offset_of!(GuestRegisters, r9);
-        const R10_OFFSET: usize = offset_of!(GuestRegisters, r10);
-        const R11_OFFSET: usize = offset_of!(GuestRegisters, r11);
-        const R12_OFFSET: usize = offset_of!(GuestRegisters, r12);
-        const R13_OFFSET: usize = offset_of!(GuestRegisters, r13);
-        const R14_OFFSET: usize = offset_of!(GuestRegisters, r14);
-        const R15_OFFSET: usize = offset_of!(GuestRegisters, r15);
-
-        naked_asm!(
-            "push rbp",
-            "push r15",
-            "push r14",
-            "push r13",
-            "push r12",
-            "push rbx",
-            "lea rbx, [rdi + {0}]",
-            "push rbx",
-            "push rdi",
-            "lea rdi, [rsp + 8]",
-            "call {set_host_stack}",
-            "pop rdi",
-            "mov rax, rdi",
-            "mov rcx, [rax+{1}]",
-            "mov rdx, [rax+{2}]",
-            "mov rbx, [rax+{3}]",
-            "mov rsi, [rax+{4}]",
-            "mov rdi, [rax+{5}]",
-            "mov rbp, [rax+{6}]",
-            "mov r8, [rax+{7}]",
-            "mov r9, [rax+{8}]",
-            "mov r10, [rax+{9}]",
-            "mov r11, [rax+{10}]",
-            "mov r12, [rax+{11}]",
-            "mov r13, [rax+{12}]",
-            "mov r14, [rax+{13}]",
-            "mov r15, [rax+{14}]",
-            "mov rax, [rax+{15}]",
-            "vmresume",
-            "mov ax, 1",
-            "add rsp, 8",
-            "pop rbx",
-            "pop r12",
-            "pop r13",
-            "pop r14",
-            "pop r15",
-            "pop rbp",
-            "ret",
-            const GUEST_REGS_OFFSET,
-            const RCX_OFFSET,
-            const RDX_OFFSET,
-            const RBX_OFFSET,
-            const RSI_OFFSET,
-            const RDI_OFFSET,
-            const RBP_OFFSET,
-            const R8_OFFSET,
-            const R9_OFFSET,
-            const R10_OFFSET,
-            const R11_OFFSET,
-            const R12_OFFSET,
-            const R13_OFFSET,
-            const R14_OFFSET,
-            const R15_OFFSET,
-            const RAX_OFFSET,
-            set_host_stack = sym Self::set_host_stack,
-        );
-    }
-
-    #[unsafe(naked)]
-    unsafe extern "C" fn asm_vm_entry() -> u16 {
-        const GUEST_REGS_OFFSET: usize = offset_of!(VCpu, guest_registers);
-        const LAUNCH_DONE: usize = offset_of!(VCpu, launch_done);
-
-        const RAX_OFFSET: usize = offset_of!(GuestRegisters, rax);
-        const RCX_OFFSET: usize = offset_of!(GuestRegisters, rcx);
-        const RDX_OFFSET: usize = offset_of!(GuestRegisters, rdx);
-        const RBX_OFFSET: usize = offset_of!(GuestRegisters, rbx);
-        const RSI_OFFSET: usize = offset_of!(GuestRegisters, rsi);
-        const RDI_OFFSET: usize = offset_of!(GuestRegisters, rdi);
-        const RBP_OFFSET: usize = offset_of!(GuestRegisters, rbp);
-        const R8_OFFSET: usize = offset_of!(GuestRegisters, r8);
-        const R9_OFFSET: usize = offset_of!(GuestRegisters, r9);
-        const R10_OFFSET: usize = offset_of!(GuestRegisters, r10);
-        const R11_OFFSET: usize = offset_of!(GuestRegisters, r11);
-        const R12_OFFSET: usize = offset_of!(GuestRegisters, r12);
-        const R13_OFFSET: usize = offset_of!(GuestRegisters, r13);
-        const R14_OFFSET: usize = offset_of!(GuestRegisters, r14);
-        const R15_OFFSET: usize = offset_of!(GuestRegisters, r15);
-
-        naked_asm!(
-            "push rbp",
-            "push r15",
-            "push r14",
-            "push r13",
-            "push r12",
-            "push rbx",
-            "lea rbx, [rdi + {0}]",
-            "push rbx",
-            "push rdi",
-            "lea rdi, [rsp + 8]",
-            "call {set_host_stack}",
-            "pop rdi",
-            "test byte ptr [rdi + {1}], 1",
-            "mov rax, rdi",
-            "mov rcx, [rax+{2}]",
-            "mov rdx, [rax+{3}]",
-            "mov rbx, [rax+{4}]",
-            "mov rsi, [rax+{5}]",
-            "mov rdi, [rax+{6}]",
-            "mov rbp, [rax+{7}]",
-            "mov r8, [rax+{8}]",
-            "mov r9, [rax+{9}]",
-            "mov r10, [rax+{10}]",
-            "mov r11, [rax+{11}]",
-            "mov r12, [rax+{12}]",
-            "mov r13, [rax+{13}]",
-            "mov r14, [rax+{14}]",
-            "mov r15, [rax+{15}]",
-            "mov rax, [rax+{16}]",
-            "vmlaunch",
-            "mov ax, 1",
-            "add rsp, 8",
-            "pop rbx",
-            "pop r12",
-            "pop r13",
-            "pop r14",
-            "pop r15",
-            "pop rbp",
-            "ret",
-            const GUEST_REGS_OFFSET,
-            const LAUNCH_DONE,
-            const RCX_OFFSET,
-            const RDX_OFFSET,
-            const RBX_OFFSET,
-            const RSI_OFFSET,
-            const RDI_OFFSET,
-            const RBP_OFFSET,
-            const R8_OFFSET,
-            const R9_OFFSET,
-            const R10_OFFSET,
-            const R11_OFFSET,
-            const R12_OFFSET,
-            const R13_OFFSET,
-            const R14_OFFSET,
-            const R15_OFFSET,
-            const RAX_OFFSET,
-            set_host_stack = sym Self::set_host_stack,
-        );
-    }
-
-    #[unsafe(naked)]
-    unsafe extern "C" fn guest() -> ! {
-        naked_asm!("2: hlt; jmp 2b");
     }
 
     fn vmexit_handler(&mut self) {
@@ -638,68 +453,5 @@ impl VCpu {
                 }
             }
         }
-    }
-
-    #[unsafe(naked)]
-    unsafe extern "C" fn vmexit() -> ! {
-        const RAX_OFFSET: usize = offset_of!(GuestRegisters, rax);
-        const RCX_OFFSET: usize = offset_of!(GuestRegisters, rcx);
-        const RDX_OFFSET: usize = offset_of!(GuestRegisters, rdx);
-        const RBX_OFFSET: usize = offset_of!(GuestRegisters, rbx);
-        const RSI_OFFSET: usize = offset_of!(GuestRegisters, rsi);
-        const RDI_OFFSET: usize = offset_of!(GuestRegisters, rdi);
-        const RBP_OFFSET: usize = offset_of!(GuestRegisters, rbp);
-        const R8_OFFSET: usize = offset_of!(GuestRegisters, r8);
-        const R9_OFFSET: usize = offset_of!(GuestRegisters, r9);
-        const R10_OFFSET: usize = offset_of!(GuestRegisters, r10);
-        const R11_OFFSET: usize = offset_of!(GuestRegisters, r11);
-        const R12_OFFSET: usize = offset_of!(GuestRegisters, r12);
-        const R13_OFFSET: usize = offset_of!(GuestRegisters, r13);
-        const R14_OFFSET: usize = offset_of!(GuestRegisters, r14);
-        const R15_OFFSET: usize = offset_of!(GuestRegisters, r15);
-
-        naked_asm!(
-            "push rax",
-            "mov rax, [rsp+8]",
-            "pop [rax+{0}]",
-            "add rsp, 8",
-            "mov [rax+{1}], rcx",
-            "mov [rax+{2}], rdx",
-            "mov [rax+{3}], rbx",
-            "mov [rax+{4}], rsi",
-            "mov [rax+{5}], rdi",
-            "mov [rax+{6}], rbp",
-            "mov [rax+{7}], r8",
-            "mov [rax+{8}], r9",
-            "mov [rax+{9}], r10",
-            "mov [rax+{10}], r11",
-            "mov [rax+{11}], r12",
-            "mov [rax+{12}], r13",
-            "mov [rax+{13}], r14",
-            "mov [rax+{14}], r15",
-            "pop rbx",
-            "pop r12",
-            "pop r13",
-            "pop r14",
-            "pop r15",
-            "pop rbp",
-            "mov rax, 0",
-            "ret",
-            const RAX_OFFSET,
-            const RCX_OFFSET,
-            const RDX_OFFSET,
-            const RBX_OFFSET,
-            const RSI_OFFSET,
-            const RDI_OFFSET,
-            const RBP_OFFSET,
-            const R8_OFFSET,
-            const R9_OFFSET,
-            const R10_OFFSET,
-            const R11_OFFSET,
-            const R12_OFFSET,
-            const R13_OFFSET,
-            const R14_OFFSET,
-            const R15_OFFSET,
-        )
     }
 }

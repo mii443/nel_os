@@ -2,7 +2,6 @@
 #![no_main]
 #![feature(custom_test_frameworks)]
 #![feature(new_zeroed_alloc)]
-#![feature(naked_functions)]
 #![test_runner(nel_os::test_runner)]
 #![reexport_test_harness_main = "test_main"]
 #![allow(unreachable_code)]
