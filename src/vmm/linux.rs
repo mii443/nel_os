@@ -1,7 +1,5 @@
 use core::ptr::read_unaligned;
 
-use crate::info;
-
 pub const BZIMAGE: &'static [u8] = include_bytes!("../../bzImage");
 
 pub const LAYOUT_BOOTPARAM: u64 = 0x0001_0000;
@@ -80,7 +78,6 @@ impl BootParams {
 
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, &'static str> {
         let hdr = SetupHeader::from_bytes(bytes)?;
-        info!("hdr: {:?}", hdr);
         let mut bp = BootParams::new();
         bp.hdr = hdr;
         Ok(bp)

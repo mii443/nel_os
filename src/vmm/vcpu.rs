@@ -8,11 +8,9 @@ use x86::{
 };
 use x86_64::VirtAddr;
 
-use core::sync::atomic::Ordering;
-
 use crate::{
     info,
-    memory::{self, BootInfoFrameAllocator},
+    memory::BootInfoFrameAllocator,
     vmm::vmcs::{
         DescriptorType, EntryControls, Granularity, PrimaryExitControls,
         PrimaryProcessorBasedVmExecutionControls, SecondaryProcessorBasedVmExecutionControls,
@@ -118,7 +116,6 @@ impl VCpu {
                 core::mem::size_of::<BootParams>(),
             )
         };
-        info!("BootParams: {:?}", bp);
         self.load_image(bp_bytes, linux::LAYOUT_BOOTPARAM as usize);
 
         let code_offset = bp.hdr.get_protected_code_offset();
@@ -142,7 +139,6 @@ impl VCpu {
         for x in 1..=1024 {
             let mut gpa = 0;
             let start = 100 * 1024 * (x - 1);
-            let end = 100 * 1024 * x;
 
             let mut random_data = [0u8; 100 * 1024];
             let mut rng = rand::rngs::SmallRng::from_seed([0u8; 16]);
@@ -159,10 +155,6 @@ impl VCpu {
                 }
                 gpa += 1;
             }
-            info!(
-                "Guest memory test passed for range {:#x} - {:#x}",
-                start, end
-            );
         }
 
         let start = 100 * 1024 * 0;
@@ -190,16 +182,6 @@ impl VCpu {
         self.test_guest_memory();
 
         self.load_kernel(linux::BZIMAGE);
-        unsafe {
-            let phys_mem_offset = memory::PHYSICAL_MEMORY_OFFSET.load(Ordering::Relaxed);
-            let hpa = self
-                .ept
-                .get_phys_addr(linux::LAYOUT_BOOTPARAM as u64)
-                .unwrap()
-                + phys_mem_offset;
-            let bp = &*(hpa as *const BootParams);
-            info!("{:?}", *bp);
-        }
 
         let eptp = EPTP::new(&self.ept.root_table);
         unsafe { vmwrite(vmcs::control::EPTP_FULL, eptp.0).unwrap() };
@@ -380,12 +362,12 @@ impl VCpu {
             vmwrite(vmcs::guest::IDTR_BASE, 0)?;
             vmwrite(vmcs::guest::LDTR_BASE, 0xDEAD00)?;
 
-            vmwrite(vmcs::guest::CS_LIMIT, 0xffff)?;
-            vmwrite(vmcs::guest::SS_LIMIT, 0xffff)?;
-            vmwrite(vmcs::guest::DS_LIMIT, 0xffff)?;
-            vmwrite(vmcs::guest::ES_LIMIT, 0xffff)?;
-            vmwrite(vmcs::guest::FS_LIMIT, 0xffff)?;
-            vmwrite(vmcs::guest::GS_LIMIT, 0xffff)?;
+            vmwrite(vmcs::guest::CS_LIMIT, u32::MAX as u64)?;
+            vmwrite(vmcs::guest::SS_LIMIT, u32::MAX as u64)?;
+            vmwrite(vmcs::guest::DS_LIMIT, u32::MAX as u64)?;
+            vmwrite(vmcs::guest::ES_LIMIT, u32::MAX as u64)?;
+            vmwrite(vmcs::guest::FS_LIMIT, u32::MAX as u64)?;
+            vmwrite(vmcs::guest::GS_LIMIT, u32::MAX as u64)?;
             vmwrite(vmcs::guest::TR_LIMIT, 0)?;
             vmwrite(vmcs::guest::GDTR_LIMIT, 0)?;
             vmwrite(vmcs::guest::IDTR_LIMIT, 0)?;
