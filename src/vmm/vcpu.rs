@@ -1,5 +1,5 @@
 use x86::{
-    bits64::vmx::vmwrite,
+    bits64::vmx::{vmread, vmwrite},
     controlregs::{cr0, cr3, cr4, Cr0},
     dtables::{self, DescriptorTablePointer},
     msr::{rdmsr, IA32_EFER, IA32_FS_BASE},
@@ -12,6 +12,7 @@ use core::sync::atomic::Ordering;
 use crate::{
     info,
     memory::{self, BootInfoFrameAllocator},
+    serial_print,
     vmm::vmcs::{
         DescriptorType, EntryControls, Granularity, PrimaryExitControls,
         PrimaryProcessorBasedVmExecutionControls, SecondaryProcessorBasedVmExecutionControls,
@@ -21,6 +22,7 @@ use crate::{
 
 use super::{
     ept::{EPT, EPTP},
+    linux::{self, BootParams, E820Type},
     register::GuestRegisters,
     vmcs::{InstructionError, PinBasedVmExecutionControls, Vmcs},
     vmxon::Vmxon,
@@ -73,8 +75,70 @@ impl VCpu {
         self.setup_guest_memory(frame_allocator);
     }
 
+    pub fn load_kernel(&mut self, kernel: &[u8]) {
+        info!("Loading kernel into guest memory");
+        let guest_mem_size = 100 * 1024 * 1024;
+        let mut bp = BootParams::from_bytes(kernel).unwrap();
+        bp.e820_entries = 0;
+
+        bp.hdr.type_of_loader = 0xFF;
+        bp.hdr.ext_loader_ver = 0;
+        bp.hdr.loadflags.set_loaded_high(true);
+        bp.hdr.loadflags.set_can_use_heap(true);
+        bp.hdr.heap_end_ptr = (linux::LAYOUT_BOOTPARAM - 0x200) as u16;
+        bp.hdr.loadflags.set_keep_segments(true);
+        bp.hdr.cmd_line_ptr = linux::LAYOUT_CMDLINE as u32;
+        bp.hdr.vid_mode = 0xFFFF;
+
+        bp.add_e820_entry(0, linux::LAYOUT_KERNEL_BASE, E820Type::Ram);
+        bp.add_e820_entry(
+            linux::LAYOUT_KERNEL_BASE,
+            guest_mem_size - linux::LAYOUT_KERNEL_BASE,
+            E820Type::Ram,
+        );
+
+        let cmdline_max_size = if bp.hdr.cmdline_size < 256 {
+            bp.hdr.cmdline_size
+        } else {
+            256
+        };
+
+        let cmdline_start = linux::LAYOUT_CMDLINE as u64;
+        let cmdline_end = cmdline_start + cmdline_max_size as u64;
+        self.ept.set_range(cmdline_start, cmdline_end, 0).unwrap();
+        let cmdline_val = "console=ttyS0 earlyprintk=serial nokaslr";
+        let cmdline_bytes = cmdline_val.as_bytes();
+        for (i, &byte) in cmdline_bytes.iter().enumerate() {
+            self.ept.set(cmdline_start + i as u64, byte).unwrap();
+        }
+
+        let bp_bytes = unsafe {
+            core::slice::from_raw_parts(
+                &bp as *const BootParams as *const u8,
+                core::mem::size_of::<BootParams>(),
+            )
+        };
+        self.load_image(bp_bytes, linux::LAYOUT_BOOTPARAM as usize);
+
+        let code_offset = bp.hdr.get_protected_code_offset();
+        let code_size = kernel.len() - code_offset;
+        self.load_image(
+            &kernel[code_offset..code_offset + code_size],
+            linux::LAYOUT_KERNEL_BASE as usize,
+        );
+
+        info!("Kernel loaded into guest memory");
+    }
+
+    pub fn load_image(&mut self, image: &[u8], addr: usize) {
+        for (i, &byte) in image.iter().enumerate() {
+            let gpa = addr + i;
+            self.ept.set(gpa as u64, byte).unwrap();
+        }
+    }
+
     pub fn setup_guest_memory(&mut self, frame_allocator: &mut BootInfoFrameAllocator) {
-        let mut pages = 25;
+        let mut pages = 100;
         let mut gpa = 0;
 
         info!("Setting up guest memory...");
@@ -89,6 +153,18 @@ impl VCpu {
             pages -= 1;
         }
         info!("Guest memory setup complete");
+
+        self.load_kernel(linux::BZIMAGE);
+        unsafe {
+            let phys_mem_offset = memory::PHYSICAL_MEMORY_OFFSET.load(Ordering::Relaxed);
+            let hpa = self
+                .ept
+                .get_phys_addr(linux::LAYOUT_BOOTPARAM as u64)
+                .unwrap()
+                + phys_mem_offset;
+            let bp = &*(hpa as *const BootParams);
+            info!("{:?}", *bp);
+        }
 
         let eptp = EPTP::new(&self.ept.root_table);
         unsafe { vmwrite(vmcs::control::EPTP_FULL, eptp.0).unwrap() };
@@ -122,7 +198,7 @@ impl VCpu {
 
         primary_exec_ctrl.0 |= (reserved_bits & 0xFFFFFFFF) as u32;
         primary_exec_ctrl.0 &= (reserved_bits >> 32) as u32;
-        primary_exec_ctrl.set_hlt(false);
+        primary_exec_ctrl.set_hlt(true);
         primary_exec_ctrl.set_activate_secondary_controls(true);
 
         primary_exec_ctrl.write();
@@ -280,10 +356,7 @@ impl VCpu {
             vmwrite(vmcs::guest::IDTR_LIMIT, 0)?;
             vmwrite(vmcs::guest::LDTR_LIMIT, 0)?;
 
-            vmwrite(
-                vmcs::guest::CS_SELECTOR,
-                x86::segmentation::cs().bits() as u64,
-            )?;
+            vmwrite(vmcs::guest::CS_SELECTOR, 0)?;
             vmwrite(vmcs::guest::SS_SELECTOR, 0)?;
             vmwrite(vmcs::guest::DS_SELECTOR, 0)?;
             vmwrite(vmcs::guest::ES_SELECTOR, 0)?;
@@ -300,8 +373,8 @@ impl VCpu {
                 rights.set_desc_type_raw(DescriptorType::Code as u8);
                 rights.set_dpl(0);
                 rights.set_granularity_raw(Granularity::KByte as u8);
-                rights.set_long(true);
-                rights.set_db(false);
+                rights.set_long(false);
+                rights.set_db(true);
 
                 rights
             };
@@ -358,9 +431,13 @@ impl VCpu {
             vmwrite(vmcs::guest::TR_ACCESS_RIGHTS, tr_right.0 as u64)?;
             vmwrite(vmcs::guest::LDTR_ACCESS_RIGHTS, ldtr_right.0 as u64)?;
 
-            vmwrite(vmcs::guest::IA32_EFER_FULL, rdmsr(IA32_EFER))?;
+            vmwrite(vmcs::guest::IA32_EFER_FULL, 0)?;
             vmwrite(vmcs::guest::RFLAGS, 0x2)?;
             vmwrite(vmcs::guest::LINK_PTR_FULL, u64::MAX)?;
+
+            vmwrite(vmcs::guest::RIP, linux::LAYOUT_KERNEL_BASE as u64)?;
+            self.guest_registers.rsi = linux::LAYOUT_BOOTPARAM as u64;
+            info!("Guest RIP: {:#x}", linux::LAYOUT_KERNEL_BASE as u64);
         }
 
         Ok(())
@@ -373,14 +450,6 @@ impl VCpu {
 
     pub fn vm_loop(&mut self) -> ! {
         info!("Entering VM loop");
-
-        let guest_ptr = crate::vmm::asm::guest_entry as u64;
-        let guest_addr = self.ept.get_phys_addr(0).unwrap()
-            + memory::PHYSICAL_MEMORY_OFFSET.load(Ordering::Relaxed);
-        unsafe {
-            core::ptr::copy_nonoverlapping(guest_ptr as *const u8, guest_addr as *mut u8, 200);
-            vmwrite(vmcs::guest::RIP, 0).unwrap();
-        }
 
         loop {
             if let Err(err) = self.vmentry() {
@@ -444,6 +513,10 @@ impl VCpu {
                 _ => {}
             }
         } else {
+            info!(
+                "vcpu RIP: {:#x}",
+                unsafe { vmread(vmcs::guest::RIP) }.unwrap()
+            );
             match info.get_reason() {
                 VmxExitReason::HLT => {
                     info!("HLT instruction executed");

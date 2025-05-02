@@ -132,6 +132,35 @@ impl EPT {
 
         Some(lv2_entry.address().as_u64())
     }
+
+    pub fn set(&mut self, gpa: u64, value: u8) -> Result<(), &'static str> {
+        let hpa = self
+            .get_phys_addr(gpa)
+            .ok_or("Failed to get physical address")?;
+        let phys_addr_offset = memory::PHYSICAL_MEMORY_OFFSET.load(Ordering::Relaxed);
+        let hpa = hpa + phys_addr_offset;
+
+        let guest_memory = unsafe { &mut *(hpa as *mut [u8; 0x100000]) };
+        let offset = (gpa & 0xFFFFF) as usize;
+        guest_memory[offset] = value;
+
+        Ok(())
+    }
+
+    pub fn set_range(
+        &mut self,
+        gpa_start: u64,
+        gpa_end: u64,
+        value: u8,
+    ) -> Result<(), &'static str> {
+        let mut gpa = gpa_start;
+        while gpa <= gpa_end {
+            self.set(gpa, value)?;
+            gpa += 1;
+        }
+
+        Ok(())
+    }
 }
 
 bitfield! {
