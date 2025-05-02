@@ -1,5 +1,7 @@
 use core::ptr::read_unaligned;
 
+use crate::info;
+
 pub const BZIMAGE: &'static [u8] = include_bytes!("../../bzImage");
 
 pub const LAYOUT_BOOTPARAM: u64 = 0x0001_0000;
@@ -40,15 +42,48 @@ pub struct BootParams {
 impl BootParams {
     pub const E820MAX: usize = 128;
 
-    pub fn from_bytes(bytes: &[u8]) -> Result<Self, &'static str> {
-        if bytes.len() < size_of::<Self>() {
-            return Err("バイト配列が小さすぎます");
-        }
+    pub fn new() -> Self {
+        let params = Self {
+            _screen_info: [0; 0x40],
+            _apm_bios_info: [0; 0x14],
+            _pad2: [0; 4],
+            tboot_addr: 0,
+            ist_info: [0; 0x10],
+            _pad3: [0; 0x10],
+            hd0_info: [0; 0x10],
+            hd1_info: [0; 0x10],
+            _sys_desc_table: [0; 0x10],
+            _olpc_ofw_header: [0; 0x10],
+            _pad4: [0; 0x80],
+            _edid_info: [0; 0x80],
+            _efi_info: [0; 0x20],
+            alt_mem_k: 0,
+            scratch: 0,
+            e820_entries: 0,
+            eddbuf_entries: 0,
+            edd_mbr_sig_buf_entries: 0,
+            kbd_status: 0,
+            _pad6: [0; 5],
+            hdr: SetupHeader::default(),
+            _pad7: [0; 0x290 - SetupHeader::HEADER_OFFSET - size_of::<SetupHeader>()],
+            _edd_mbr_sig_buffer: [0; 0x10],
+            e820_map: [E820Entry {
+                addr: 0,
+                size: 0,
+                type_: E820Type::Ram as u32,
+            }; Self::E820MAX],
+            _unimplemented: [0; 0x330],
+        };
 
-        unsafe {
-            let boot_params_ptr = bytes.as_ptr() as *const Self;
-            Ok(read_unaligned(boot_params_ptr))
-        }
+        params
+    }
+
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, &'static str> {
+        let hdr = SetupHeader::from_bytes(bytes)?;
+        info!("hdr: {:?}", hdr);
+        let mut bp = BootParams::new();
+        bp.hdr = hdr;
+        Ok(bp)
     }
 
     pub fn add_e820_entry(&mut self, addr: u64, size: u64, type_: E820Type) {
@@ -60,7 +95,7 @@ impl BootParams {
 }
 
 #[repr(C, packed)]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct SetupHeader {
     pub setup_sects: u8,
     pub root_flags: u16,
@@ -111,16 +146,16 @@ impl SetupHeader {
             return Err("バイト配列が小さすぎます");
         }
 
-        let mut header = unsafe {
+        let mut hdr = unsafe {
             let header_ptr = bytes.as_ptr().add(Self::HEADER_OFFSET) as *const Self;
             read_unaligned(header_ptr)
         };
 
-        if header.setup_sects == 0 {
-            header.setup_sects = 4;
+        if hdr.setup_sects == 0 {
+            hdr.setup_sects = 4;
         }
 
-        Ok(header)
+        Ok(hdr)
     }
 
     pub fn get_protected_code_offset(&self) -> usize {
@@ -129,7 +164,7 @@ impl SetupHeader {
 }
 
 #[repr(C, packed)]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct LoadflagBitfield {
     raw: u8,
 }

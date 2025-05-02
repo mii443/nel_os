@@ -111,6 +111,7 @@ impl EPT {
         let lv4_index = (gpa >> 39) & 0x1FF;
         let lv3_index = (gpa >> 30) & 0x1FF;
         let lv2_index = (gpa >> 21) & 0x1FF;
+        let page_offset = gpa & 0x1FFFFF;
 
         let lv4_table = Self::frame_to_table_ptr(&self.root_table);
         let lv4_entry = &lv4_table[lv4_index as usize];
@@ -130,7 +131,19 @@ impl EPT {
             return None;
         }
 
-        Some(lv2_entry.address().as_u64())
+        let phys_addr_base = lv2_entry.address().as_u64();
+        Some(phys_addr_base | page_offset)
+    }
+
+    pub fn get(&mut self, gpa: u64) -> Result<u8, &'static str> {
+        let hpa = self
+            .get_phys_addr(gpa)
+            .ok_or("Failed to get physical address")?;
+        let phys_addr_offset = memory::PHYSICAL_MEMORY_OFFSET.load(Ordering::Relaxed);
+        let hpa = hpa + phys_addr_offset;
+
+        let guest_memory = unsafe { &*(hpa as *const u8) };
+        Ok(*guest_memory)
     }
 
     pub fn set(&mut self, gpa: u64, value: u8) -> Result<(), &'static str> {
@@ -140,9 +153,8 @@ impl EPT {
         let phys_addr_offset = memory::PHYSICAL_MEMORY_OFFSET.load(Ordering::Relaxed);
         let hpa = hpa + phys_addr_offset;
 
-        let guest_memory = unsafe { &mut *(hpa as *mut [u8; 0x100000]) };
-        let offset = (gpa & 0xFFFFF) as usize;
-        guest_memory[offset] = value;
+        let guest_memory = unsafe { &mut *(hpa as *mut u8) };
+        *guest_memory = value;
 
         Ok(())
     }

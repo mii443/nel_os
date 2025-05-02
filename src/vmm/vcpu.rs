@@ -1,3 +1,4 @@
+use rand::{Rng, SeedableRng};
 use x86::{
     bits64::vmx::{vmread, vmwrite},
     controlregs::{cr0, cr3, cr4, Cr0},
@@ -12,7 +13,6 @@ use core::sync::atomic::Ordering;
 use crate::{
     info,
     memory::{self, BootInfoFrameAllocator},
-    serial_print,
     vmm::vmcs::{
         DescriptorType, EntryControls, Granularity, PrimaryExitControls,
         PrimaryProcessorBasedVmExecutionControls, SecondaryProcessorBasedVmExecutionControls,
@@ -118,6 +118,7 @@ impl VCpu {
                 core::mem::size_of::<BootParams>(),
             )
         };
+        info!("BootParams: {:?}", bp);
         self.load_image(bp_bytes, linux::LAYOUT_BOOTPARAM as usize);
 
         let code_offset = bp.hdr.get_protected_code_offset();
@@ -137,6 +138,38 @@ impl VCpu {
         }
     }
 
+    pub fn test_guest_memory(&mut self) {
+        for x in 1..=1024 {
+            let mut gpa = 0;
+            let start = 100 * 1024 * (x - 1);
+            let end = 100 * 1024 * x;
+
+            let mut random_data = [0u8; 100 * 1024];
+            let mut rng = rand::rngs::SmallRng::from_seed([0u8; 16]);
+            for byte in random_data.iter_mut() {
+                *byte = rng.gen();
+            }
+
+            self.load_image(&random_data, start);
+
+            while gpa < 100 * 1024 {
+                let value = self.ept.get((gpa + start) as u64).unwrap();
+                if value != random_data[gpa] {
+                    panic!("Guest memory test failed at {:#x}", gpa);
+                }
+                gpa += 1;
+            }
+            info!(
+                "Guest memory test passed for range {:#x} - {:#x}",
+                start, end
+            );
+        }
+
+        let start = 100 * 1024 * 0;
+        let end = 100 * 1024 * 1024;
+        self.ept.set_range(start as u64, end as u64, 0).unwrap();
+    }
+
     pub fn setup_guest_memory(&mut self, frame_allocator: &mut BootInfoFrameAllocator) {
         let mut pages = 100;
         let mut gpa = 0;
@@ -153,6 +186,8 @@ impl VCpu {
             pages -= 1;
         }
         info!("Guest memory setup complete");
+
+        self.test_guest_memory();
 
         self.load_kernel(linux::BZIMAGE);
         unsafe {
