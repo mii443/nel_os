@@ -122,7 +122,7 @@ impl VCpu {
 
         primary_exec_ctrl.0 |= (reserved_bits & 0xFFFFFFFF) as u32;
         primary_exec_ctrl.0 &= (reserved_bits >> 32) as u32;
-        primary_exec_ctrl.set_hlt(true);
+        primary_exec_ctrl.set_hlt(false);
         primary_exec_ctrl.set_activate_secondary_controls(true);
 
         primary_exec_ctrl.write();
