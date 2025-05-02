@@ -74,7 +74,7 @@ impl VCpu {
     }
 
     pub fn setup_guest_memory(&mut self, frame_allocator: &mut BootInfoFrameAllocator) {
-        let mut pages = 50;
+        let mut pages = 25;
         let mut gpa = 0;
 
         info!("Setting up guest memory...");
