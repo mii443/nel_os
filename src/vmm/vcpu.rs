@@ -11,10 +11,13 @@ use x86_64::VirtAddr;
 use crate::{
     info,
     memory::BootInfoFrameAllocator,
-    vmm::vmcs::{
-        DescriptorType, EntryControls, Granularity, PrimaryExitControls,
-        PrimaryProcessorBasedVmExecutionControls, SecondaryProcessorBasedVmExecutionControls,
-        SegmentRights, VmxExitInfo, VmxExitReason,
+    vmm::{
+        cpuid,
+        vmcs::{
+            DescriptorType, EntryControls, Granularity, PrimaryExitControls,
+            PrimaryProcessorBasedVmExecutionControls, SecondaryProcessorBasedVmExecutionControls,
+            SegmentRights, VmxExitInfo, VmxExitReason,
+        },
     },
 };
 
@@ -215,7 +218,7 @@ impl VCpu {
 
         primary_exec_ctrl.0 |= (reserved_bits & 0xFFFFFFFF) as u32;
         primary_exec_ctrl.0 &= (reserved_bits >> 32) as u32;
-        primary_exec_ctrl.set_hlt(true);
+        primary_exec_ctrl.set_hlt(false);
         primary_exec_ctrl.set_activate_secondary_controls(true);
 
         primary_exec_ctrl.write();
@@ -256,6 +259,8 @@ impl VCpu {
         entry_ctrl.0 |= (reserved_bits & 0xFFFFFFFF) as u32;
         entry_ctrl.0 &= (reserved_bits >> 32) as u32;
         entry_ctrl.set_ia32e_mode_guest(false);
+        entry_ctrl.set_load_ia32_efer(true);
+        entry_ctrl.set_load_ia32_pat(true);
 
         entry_ctrl.write();
 
@@ -279,6 +284,9 @@ impl VCpu {
         exit_ctrl.0 &= (reserved_bits >> 32) as u32;
         exit_ctrl.set_host_addr_space_size(true);
         exit_ctrl.set_load_ia32_efer(true);
+        exit_ctrl.set_save_ia32_efer(true);
+        exit_ctrl.set_load_ia32_pat(true);
+        exit_ctrl.set_save_ia32_pat(true);
 
         exit_ctrl.write();
 
@@ -355,8 +363,6 @@ impl VCpu {
             vmwrite(vmcs::guest::SS_BASE, 0)?;
             vmwrite(vmcs::guest::DS_BASE, 0)?;
             vmwrite(vmcs::guest::ES_BASE, 0)?;
-            vmwrite(vmcs::guest::FS_BASE, 0)?;
-            vmwrite(vmcs::guest::GS_BASE, 0)?;
             vmwrite(vmcs::guest::TR_BASE, 0)?;
             vmwrite(vmcs::guest::GDTR_BASE, 0)?;
             vmwrite(vmcs::guest::IDTR_BASE, 0)?;
@@ -372,15 +378,6 @@ impl VCpu {
             vmwrite(vmcs::guest::GDTR_LIMIT, 0)?;
             vmwrite(vmcs::guest::IDTR_LIMIT, 0)?;
             vmwrite(vmcs::guest::LDTR_LIMIT, 0)?;
-
-            vmwrite(vmcs::guest::CS_SELECTOR, 0)?;
-            vmwrite(vmcs::guest::SS_SELECTOR, 0)?;
-            vmwrite(vmcs::guest::DS_SELECTOR, 0)?;
-            vmwrite(vmcs::guest::ES_SELECTOR, 0)?;
-            vmwrite(vmcs::guest::FS_SELECTOR, 0)?;
-            vmwrite(vmcs::guest::GS_SELECTOR, 0)?;
-            vmwrite(vmcs::guest::TR_SELECTOR, 0)?;
-            vmwrite(vmcs::guest::LDTR_SELECTOR, 0)?;
 
             let cs_right = {
                 let mut rights = SegmentRights::default();
@@ -448,7 +445,19 @@ impl VCpu {
             vmwrite(vmcs::guest::TR_ACCESS_RIGHTS, tr_right.0 as u64)?;
             vmwrite(vmcs::guest::LDTR_ACCESS_RIGHTS, ldtr_right.0 as u64)?;
 
+            vmwrite(vmcs::guest::CS_SELECTOR, 0)?;
+            vmwrite(vmcs::guest::SS_SELECTOR, 0)?;
+            vmwrite(vmcs::guest::DS_SELECTOR, 0)?;
+            vmwrite(vmcs::guest::ES_SELECTOR, 0)?;
+            vmwrite(vmcs::guest::FS_SELECTOR, 0)?;
+            vmwrite(vmcs::guest::GS_SELECTOR, 0)?;
+            vmwrite(vmcs::guest::TR_SELECTOR, 0)?;
+            vmwrite(vmcs::guest::LDTR_SELECTOR, 0)?;
+            vmwrite(vmcs::guest::FS_BASE, 0)?;
+            vmwrite(vmcs::guest::GS_BASE, 0)?;
+
             vmwrite(vmcs::guest::IA32_EFER_FULL, 0)?;
+            vmwrite(vmcs::guest::IA32_EFER_HIGH, 0)?;
             vmwrite(vmcs::guest::RFLAGS, 0x2)?;
             vmwrite(vmcs::guest::LINK_PTR_FULL, u64::MAX)?;
 
@@ -477,9 +486,29 @@ impl VCpu {
         }
     }
 
+    fn print_guest_regs(&self) {
+        info!("Guest Registers:");
+        info!("RAX: {:#x}", self.guest_registers.rax);
+        info!("RBX: {:#x}", self.guest_registers.rbx);
+        info!("RCX: {:#x}", self.guest_registers.rcx);
+        info!("RDX: {:#x}", self.guest_registers.rdx);
+        info!("RSI: {:#x}", self.guest_registers.rsi);
+        info!("RDI: {:#x}", self.guest_registers.rdi);
+        info!("RBP: {:#x}", self.guest_registers.rbp);
+        info!("R8:  {:#x}", self.guest_registers.r8);
+        info!("R9:  {:#x}", self.guest_registers.r9);
+        info!("R10: {:#x}", self.guest_registers.r10);
+        info!("R11: {:#x}", self.guest_registers.r11);
+        info!("R12: {:#x}", self.guest_registers.r12);
+        info!("R13: {:#x}", self.guest_registers.r13);
+        info!("R14: {:#x}", self.guest_registers.r14);
+        info!("R15: {:#x}", self.guest_registers.r15);
+    }
+
     fn vmentry(&mut self) -> Result<(), InstructionError> {
         let success = {
             let result: u16;
+            self.print_guest_regs();
             if !self.launch_done {
                 unsafe {
                     result = crate::vmm::asm::asm_vm_entry(self as *mut _);
@@ -512,6 +541,16 @@ impl VCpu {
         vmwrite(vmcs::host::RSP, rsp).unwrap();
     }
 
+    fn step_next_inst(&mut self) -> Result<(), VmFail> {
+        unsafe {
+            let rip = vmread(vmcs::guest::RIP)?;
+            vmwrite(
+                vmcs::guest::RIP,
+                rip + vmread(vmcs::ro::VMEXIT_INSTRUCTION_LEN)?,
+            )
+        }
+    }
+
     fn vmexit_handler(&mut self) {
         let info = VmxExitInfo::read();
 
@@ -530,13 +569,15 @@ impl VCpu {
                 _ => {}
             }
         } else {
-            info!(
-                "vcpu RIP: {:#x}",
-                unsafe { vmread(vmcs::guest::RIP) }.unwrap()
-            );
+            info!("RIP: {:#x}", unsafe { vmread(vmcs::guest::RIP) }.unwrap());
             match info.get_reason() {
                 VmxExitReason::HLT => {
                     info!("HLT instruction executed");
+                }
+                VmxExitReason::CPUID => {
+                    info!("CPUID instruction executed");
+                    cpuid::handle_cpuid_exit(self);
+                    self.step_next_inst().unwrap();
                 }
                 _ => {
                     panic!("VMExit reason: {:?}", info.get_reason());

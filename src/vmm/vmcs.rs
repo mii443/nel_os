@@ -629,3 +629,27 @@ impl VmxExitInfo {
         reason.try_into().unwrap()
     }
 }
+
+pub enum VmxLeaf {
+    MAXIMUM_INPUT = 0x0,
+    VERSION_AND_FEATURE_INFO = 0x1,
+    EXTENDED_FEATURE = 0x7,
+    EXTENDED_ENUMERATION = 0xD,
+    EXTENDED_FUNCTION = 0x80000000,
+    EXTENDED_PROCESSOR_SIGNATURE = 0x80000001,
+    UNKNOWN = 0xFFFFFFFF,
+}
+
+impl VmxLeaf {
+    pub fn from(rax: u64) -> VmxLeaf {
+        match rax {
+            0x0 => VmxLeaf::MAXIMUM_INPUT,
+            0x1 => VmxLeaf::VERSION_AND_FEATURE_INFO,
+            0x7 => VmxLeaf::EXTENDED_FEATURE,
+            0xD => VmxLeaf::EXTENDED_ENUMERATION,
+            0x80000000 => VmxLeaf::EXTENDED_FUNCTION,
+            0x80000001 => VmxLeaf::EXTENDED_PROCESSOR_SIGNATURE,
+            _ => VmxLeaf::UNKNOWN,
+        }
+    }
+}

@@ -1,4 +1,5 @@
 pub mod asm;
+pub mod cpuid;
 pub mod ept;
 pub mod error;
 pub mod linux;
