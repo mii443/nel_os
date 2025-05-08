@@ -352,9 +352,8 @@ impl VCpu {
         info!("Setting up guest state");
 
         unsafe {
-            let cr0 = Cr0::empty()
-                | Cr0::CR0_PROTECTED_MODE
-                | Cr0::CR0_NUMERIC_ERROR & !Cr0::CR0_ENABLE_PAGING;
+            let cr0 = (Cr0::empty() | Cr0::CR0_PROTECTED_MODE | Cr0::CR0_NUMERIC_ERROR)
+                & !Cr0::CR0_ENABLE_PAGING;
             vmwrite(vmcs::guest::CR0, cr0.bits() as u64)?;
             vmwrite(vmcs::guest::CR3, cr3())?;
             vmwrite(vmcs::guest::CR4, cr4().bits() as u64)?;

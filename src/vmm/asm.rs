@@ -28,15 +28,16 @@ const R12_OFFSET: usize = offset_of!(GuestRegisters, r12);
 const R13_OFFSET: usize = offset_of!(GuestRegisters, r13);
 const R14_OFFSET: usize = offset_of!(GuestRegisters, r14);
 const R15_OFFSET: usize = offset_of!(GuestRegisters, r15);
+const XMM0_OFFSET: usize = offset_of!(GuestRegisters, xmm0);
+const XMM1_OFFSET: usize = offset_of!(GuestRegisters, xmm1);
+const XMM2_OFFSET: usize = offset_of!(GuestRegisters, xmm2);
+const XMM3_OFFSET: usize = offset_of!(GuestRegisters, xmm3);
+const XMM4_OFFSET: usize = offset_of!(GuestRegisters, xmm4);
+const XMM5_OFFSET: usize = offset_of!(GuestRegisters, xmm5);
+const XMM6_OFFSET: usize = offset_of!(GuestRegisters, xmm6);
+const XMM7_OFFSET: usize = offset_of!(GuestRegisters, xmm7);
 
 global_asm!(
-    ".global guest_entry",
-    ".type guest_entry, @function",
-    "guest_entry:",
-    "2: hlt",
-    "jmp 2b",
-    ".size guest_entry, . - guest_entry",
-
     ".global asm_vm_entry_resume",
     ".type asm_vm_entry_resume, @function",
     "asm_vm_entry_resume:",
@@ -67,6 +68,14 @@ global_asm!(
     "mov r13, [rax+{13}]",
     "mov r14, [rax+{14}]",
     "mov r15, [rax+{15}]",
+    "movaps xmm0, [rax+{17}]",
+    "movaps xmm1, [rax+{18}]",
+    "movaps xmm2, [rax+{19}]",
+    "movaps xmm3, [rax+{20}]",
+    "movaps xmm4, [rax+{21}]",
+    "movaps xmm5, [rax+{22}]",
+    "movaps xmm6, [rax+{23}]",
+    "movaps xmm7, [rax+{24}]",
     "mov rax, [rax+{16}]",
     "vmresume",
     "mov ax, 1",
@@ -112,6 +121,14 @@ global_asm!(
     "mov r14, [rax+{14}]",
     "mov r15, [rax+{15}]",
     "mov rax, [rax+{16}]",
+    "movaps xmm0, [rax+{17}]",
+    "movaps xmm1, [rax+{18}]",
+    "movaps xmm2, [rax+{19}]",
+    "movaps xmm3, [rax+{20}]",
+    "movaps xmm4, [rax+{21}]",
+    "movaps xmm5, [rax+{22}]",
+    "movaps xmm6, [rax+{23}]",
+    "movaps xmm7, [rax+{24}]",
     "vmlaunch",
     "mov ax, 1",
     "add rsp, 8",
@@ -145,6 +162,14 @@ global_asm!(
     "mov [rax+{13}], r13",
     "mov [rax+{14}], r14",
     "mov [rax+{15}], r15",
+    "movaps [rax+{17}], xmm0",
+    "movaps [rax+{18}], xmm1",
+    "movaps [rax+{19}], xmm2",
+    "movaps [rax+{20}], xmm3",
+    "movaps [rax+{21}], xmm4",
+    "movaps [rax+{22}], xmm5",
+    "movaps [rax+{23}], xmm6",
+    "movaps [rax+{24}], xmm7",
     "pop rbx",
     "pop r12",
     "pop r13",
@@ -172,4 +197,12 @@ global_asm!(
     const R14_OFFSET,
     const R15_OFFSET,
     const RAX_OFFSET,
+    const XMM0_OFFSET,
+    const XMM1_OFFSET,
+    const XMM2_OFFSET,
+    const XMM3_OFFSET,
+    const XMM4_OFFSET,
+    const XMM5_OFFSET,
+    const XMM6_OFFSET,
+    const XMM7_OFFSET,
 );

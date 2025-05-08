@@ -22,6 +22,8 @@ use core::panic::PanicInfo;
 use bootloader::entry_point;
 #[cfg(test)]
 use bootloader::BootInfo;
+use x86_64::registers::control::Cr4;
+use x86_64::registers::control::Cr4Flags;
 
 pub trait Testable {
     fn run(&self) -> ();
@@ -103,4 +105,6 @@ pub fn init() {
         interrupts::PICS.lock().initialize();
     }
     x86_64::instructions::interrupts::enable();
+    let cr = Cr4::read() | Cr4Flags::OSFXSR;
+    unsafe { Cr4::write(cr) };
 }
