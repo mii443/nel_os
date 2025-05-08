@@ -6,7 +6,7 @@ use x86::{
     msr::{rdmsr, IA32_EFER, IA32_FS_BASE},
     vmx::{vmcs, VmFail},
 };
-use x86_64::VirtAddr;
+use x86_64::{registers::control::Cr4Flags, VirtAddr};
 
 use crate::{
     info,
@@ -220,6 +220,7 @@ impl VCpu {
         primary_exec_ctrl.0 &= (reserved_bits >> 32) as u32;
         primary_exec_ctrl.set_hlt(false);
         primary_exec_ctrl.set_activate_secondary_controls(true);
+        primary_exec_ctrl.set_use_tpr_shadow(true);
 
         primary_exec_ctrl.write();
 
@@ -356,7 +357,10 @@ impl VCpu {
                 & !Cr0::CR0_ENABLE_PAGING;
             vmwrite(vmcs::guest::CR0, cr0.bits() as u64)?;
             vmwrite(vmcs::guest::CR3, cr3())?;
-            vmwrite(vmcs::guest::CR4, cr4().bits() as u64)?;
+            vmwrite(
+                vmcs::guest::CR4,
+                vmread(vmcs::guest::CR4)? | Cr4Flags::VIRTUAL_MACHINE_EXTENSIONS.bits(),
+            )?;
 
             vmwrite(vmcs::guest::CS_BASE, 0)?;
             vmwrite(vmcs::guest::SS_BASE, 0)?;
