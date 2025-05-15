@@ -9,6 +9,21 @@ pub fn handle_cpuid_exit(vcpu: &mut VCpu) {
     let vendor: &[u8; 12] = b"NelogikaNelo";
     let vendor = unsafe { core::mem::transmute::<&[u8; 12], &[u32; 3]>(vendor) };
     match VmxLeaf::from(regs.rax) {
+        VmxLeaf::EXTENDED_PROCESSOR_SIGNATURE => {
+            info!("CPUID extended processor signature");
+            let signature = cpuid!(0x80000001, 0);
+            regs.rax = 0x00000000;
+            regs.rbx = 0x00000000;
+            regs.rcx = signature.ecx as u64;
+            regs.rdx = signature.edx as u64;
+        }
+        VmxLeaf::EXTENDED_FUNCTION => {
+            info!("CPUID extended function");
+            regs.rax = 0x80000000 + 1;
+            regs.rbx = 0x00000000;
+            regs.rcx = 0x00000000;
+            regs.rdx = 0x00000000;
+        }
         VmxLeaf::MAXIMUM_INPUT => {
             info!("CPUID max input");
             regs.rax = 0x20;
