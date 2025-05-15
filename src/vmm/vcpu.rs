@@ -493,25 +493,6 @@ impl VCpu {
         }
     }
 
-    fn print_guest_regs(&self) {
-        info!("Guest Registers:");
-        info!("RAX: {:#x}", self.guest_registers.rax);
-        info!("RBX: {:#x}", self.guest_registers.rbx);
-        info!("RCX: {:#x}", self.guest_registers.rcx);
-        info!("RDX: {:#x}", self.guest_registers.rdx);
-        info!("RSI: {:#x}", self.guest_registers.rsi);
-        info!("RDI: {:#x}", self.guest_registers.rdi);
-        info!("RBP: {:#x}", self.guest_registers.rbp);
-        info!("R8:  {:#x}", self.guest_registers.r8);
-        info!("R9:  {:#x}", self.guest_registers.r9);
-        info!("R10: {:#x}", self.guest_registers.r10);
-        info!("R11: {:#x}", self.guest_registers.r11);
-        info!("R12: {:#x}", self.guest_registers.r12);
-        info!("R13: {:#x}", self.guest_registers.r13);
-        info!("R14: {:#x}", self.guest_registers.r14);
-        info!("R15: {:#x}", self.guest_registers.r15);
-    }
-
     fn vmentry(&mut self) -> Result<(), InstructionError> {
         let success = {
             let result: u16;
@@ -569,7 +550,6 @@ impl VCpu {
                 _ => {}
             }
         } else {
-            info!("RIP: {:#x}", unsafe { vmread(vmcs::guest::RIP) }.unwrap());
             match info.get_reason() {
                 VmxExitReason::HLT => {
                     info!("HLT instruction executed");
