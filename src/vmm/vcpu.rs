@@ -29,11 +29,12 @@ use super::{
     vmxon::Vmxon,
 };
 
+#[repr(C)]
 pub struct VCpu {
+    pub guest_registers: GuestRegisters,
     pub vmxon: Vmxon,
     pub vmcs: Vmcs,
     pub phys_mem_offset: u64,
-    pub guest_registers: GuestRegisters,
     pub launch_done: bool,
     pub ept: EPT,
     pub eptp: EPTP,
@@ -301,7 +302,7 @@ impl VCpu {
             vmwrite(vmcs::host::CR3, cr3())?;
             vmwrite(vmcs::host::CR4, cr4().bits() as u64)?;
 
-            vmwrite(vmcs::host::RIP, crate::vmm::asm::vmexit_handler_asm as u64)?;
+            vmwrite(vmcs::host::RIP, crate::vmm::asm::asm_vmexit_handler as u64)?;
             vmwrite(
                 vmcs::host::RSP,
                 VirtAddr::from_ptr(&raw mut TEMP_STACK).as_u64() + TEMP_STACK_SIZE as u64,
@@ -359,7 +360,10 @@ impl VCpu {
             vmwrite(vmcs::guest::CR3, cr3())?;
             vmwrite(
                 vmcs::guest::CR4,
-                vmread(vmcs::guest::CR4)? | Cr4Flags::VIRTUAL_MACHINE_EXTENSIONS.bits(),
+                vmread(vmcs::guest::CR4)?
+                    | 1 << 5
+                    | 1 << 7
+                    | Cr4Flags::VIRTUAL_MACHINE_EXTENSIONS.bits(),
             )?;
 
             vmwrite(vmcs::guest::CS_BASE, 0)?;
@@ -512,17 +516,11 @@ impl VCpu {
         let success = {
             let result: u16;
             self.print_guest_regs();
-            if !self.launch_done {
-                unsafe {
-                    result = crate::vmm::asm::asm_vm_entry(self as *mut _);
-                };
-                result == 0
-            } else {
-                unsafe {
-                    result = crate::vmm::asm::asm_vm_entry_resume(self as *mut _);
-                };
-                result == 0
-            }
+
+            unsafe {
+                result = crate::vmm::asm::asm_vm_entry(self as *mut _);
+            };
+            result == 0
         };
 
         if !self.launch_done && success {
