@@ -515,7 +515,6 @@ impl VCpu {
     fn vmentry(&mut self) -> Result<(), InstructionError> {
         let success = {
             let result: u16;
-            self.print_guest_regs();
 
             unsafe {
                 result = crate::vmm::asm::asm_vm_entry(self as *mut _);

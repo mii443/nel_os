@@ -6,7 +6,7 @@ use super::{vcpu::VCpu, vmcs::VmxLeaf};
 
 pub fn handle_cpuid_exit(vcpu: &mut VCpu) {
     let regs = &mut vcpu.guest_registers;
-    let vendor: &[u8; 12] = b"NelogikaNelo";
+    let vendor: &[u8; 12] = b"miimiimiimii";
     let vendor = unsafe { core::mem::transmute::<&[u8; 12], &[u32; 3]>(vendor) };
     match VmxLeaf::from(regs.rax) {
         VmxLeaf::EXTENDED_PROCESSOR_SIGNATURE => {
