@@ -6,13 +6,13 @@ use x86::{
     msr::{rdmsr, IA32_EFER, IA32_FS_BASE},
     vmx::{vmcs, VmFail},
 };
-use x86_64::{registers::control::Cr4Flags, VirtAddr};
+use x86_64::{registers::control::Cr4Flags, structures::paging::OffsetPageTable, VirtAddr};
 
 use crate::{
     info,
     memory::BootInfoFrameAllocator,
     vmm::{
-        cpuid,
+        cpuid, msr,
         vmcs::{
             DescriptorType, EntryControls, Granularity, PrimaryExitControls,
             PrimaryProcessorBasedVmExecutionControls, SecondaryProcessorBasedVmExecutionControls,
@@ -24,6 +24,7 @@ use crate::{
 use super::{
     ept::{EPT, EPTP},
     linux::{self, BootParams, E820Type},
+    msr::ShadowMsr,
     register::GuestRegisters,
     vmcs::{InstructionError, PinBasedVmExecutionControls, Vmcs},
     vmxon::Vmxon,
@@ -38,6 +39,8 @@ pub struct VCpu {
     pub launch_done: bool,
     pub ept: EPT,
     pub eptp: EPTP,
+    pub host_msr: ShadowMsr,
+    pub guest_msr: ShadowMsr,
 }
 
 const TEMP_STACK_SIZE: usize = 4096;
@@ -59,6 +62,8 @@ impl VCpu {
             launch_done: false,
             ept,
             eptp,
+            host_msr: ShadowMsr::new(),
+            guest_msr: ShadowMsr::new(),
         }
     }
 
@@ -191,6 +196,88 @@ impl VCpu {
         unsafe { vmwrite(vmcs::control::EPTP_FULL, eptp.0).unwrap() };
     }
 
+    pub fn register_msrs(&mut self, mapper: OffsetPageTable<'static>) {
+        unsafe {
+            // tsc_aux, star, lstar, cstar, fmask, kernel_gs_base.
+            self.host_msr
+                .set(x86::msr::IA32_TSC_AUX, rdmsr(x86::msr::IA32_TSC_AUX) as u64)
+                .unwrap();
+            self.host_msr
+                .set(x86::msr::IA32_STAR, rdmsr(x86::msr::IA32_STAR) as u64)
+                .unwrap();
+            self.host_msr
+                .set(x86::msr::IA32_LSTAR, rdmsr(x86::msr::IA32_LSTAR) as u64)
+                .unwrap();
+            self.host_msr
+                .set(x86::msr::IA32_CSTAR, rdmsr(x86::msr::IA32_CSTAR) as u64)
+                .unwrap();
+            self.host_msr
+                .set(x86::msr::IA32_FMASK, rdmsr(x86::msr::IA32_FMASK) as u64)
+                .unwrap();
+            self.host_msr
+                .set(
+                    x86::msr::IA32_KERNEL_GSBASE,
+                    rdmsr(x86::msr::IA32_KERNEL_GSBASE) as u64,
+                )
+                .unwrap();
+
+            self.guest_msr.set(x86::msr::IA32_TSC_AUX, 0).unwrap();
+            self.guest_msr.set(x86::msr::IA32_STAR, 0).unwrap();
+            self.guest_msr.set(x86::msr::IA32_LSTAR, 0).unwrap();
+            self.guest_msr.set(x86::msr::IA32_CSTAR, 0).unwrap();
+            self.guest_msr.set(x86::msr::IA32_FMASK, 0).unwrap();
+            self.guest_msr.set(x86::msr::IA32_KERNEL_GSBASE, 0).unwrap();
+
+            vmwrite(
+                vmcs::control::VMEXIT_MSR_LOAD_ADDR_FULL,
+                self.host_msr.phys(&mapper).as_u64(),
+            )
+            .unwrap();
+            vmwrite(
+                vmcs::control::VMEXIT_MSR_STORE_ADDR_FULL,
+                self.guest_msr.phys(&mapper).as_u64(),
+            )
+            .unwrap();
+            vmwrite(
+                vmcs::control::VMENTRY_MSR_LOAD_ADDR_FULL,
+                self.guest_msr.phys(&mapper).as_u64(),
+            )
+            .unwrap();
+        }
+    }
+
+    pub fn update_msrs(&mut self) {
+        let indices_to_update: alloc::vec::Vec<u32> = self
+            .host_msr
+            .saved_ents()
+            .iter()
+            .map(|entry| entry.index)
+            .collect();
+
+        for index in indices_to_update {
+            let value = unsafe { rdmsr(index) };
+            self.host_msr.set_by_index(index, value).unwrap();
+        }
+
+        unsafe {
+            vmwrite(
+                vmcs::control::VMEXIT_MSR_LOAD_COUNT,
+                self.host_msr.saved_ents().len() as u64,
+            )
+            .unwrap();
+            vmwrite(
+                vmcs::control::VMEXIT_MSR_STORE_COUNT,
+                self.guest_msr.saved_ents().len() as u64,
+            )
+            .unwrap();
+            vmwrite(
+                vmcs::control::VMENTRY_MSR_LOAD_COUNT,
+                self.guest_msr.saved_ents().len() as u64,
+            )
+            .unwrap();
+        }
+    }
+
     pub fn setup_exec_ctrls(&mut self) -> Result<(), VmFail> {
         info!("Setting up pin based execution controls");
         let basic_msr = unsafe { rdmsr(x86::msr::IA32_VMX_BASIC) };
@@ -222,6 +309,7 @@ impl VCpu {
         primary_exec_ctrl.set_hlt(false);
         primary_exec_ctrl.set_activate_secondary_controls(true);
         primary_exec_ctrl.set_use_tpr_shadow(true);
+        primary_exec_ctrl.set_use_msr_bitmap(false);
 
         primary_exec_ctrl.write();
 
@@ -555,8 +643,17 @@ impl VCpu {
                     info!("HLT instruction executed");
                 }
                 VmxExitReason::CPUID => {
-                    info!("CPUID instruction executed");
                     cpuid::handle_cpuid_exit(self);
+                    self.step_next_inst().unwrap();
+                }
+                VmxExitReason::RDMSR => {
+                    info!("RDMSR instruction executed");
+                    msr::ShadowMsr::handle_rdmsr_vmexit(self);
+                    self.step_next_inst().unwrap();
+                }
+                VmxExitReason::WRMSR => {
+                    info!("WRMSR instruction executed");
+                    msr::ShadowMsr::handle_wrmsr_vmexit(self);
                     self.step_next_inst().unwrap();
                 }
                 _ => {

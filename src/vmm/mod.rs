@@ -3,6 +3,7 @@ pub mod cpuid;
 pub mod ept;
 pub mod error;
 pub mod linux;
+pub mod msr;
 pub mod register;
 pub mod support;
 pub mod vcpu;

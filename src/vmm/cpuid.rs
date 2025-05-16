@@ -9,6 +9,28 @@ pub fn handle_cpuid_exit(vcpu: &mut VCpu) {
     let vendor: &[u8; 12] = b"miimiimiimii";
     let vendor = unsafe { core::mem::transmute::<&[u8; 12], &[u32; 3]>(vendor) };
     match VmxLeaf::from(regs.rax) {
+        VmxLeaf::EXTENDED_FEATURE => match regs.rcx {
+            0 => {
+                info!("CPUID extended feature");
+                let mut ebx = ExtFeatureEbx0::default();
+                ebx.smep = true;
+                ebx.invpcid = false;
+                ebx.smap = true;
+                regs.rax = 1;
+                regs.rbx = ebx.as_u32() as u64;
+                regs.rcx = 0;
+                regs.rdx = 0;
+            }
+            1 => {
+                invalid(vcpu);
+            }
+            2 => {
+                invalid(vcpu);
+            }
+            _ => {
+                panic!("Unhandled CPUID leaf: {:#x}.{:#x}", regs.rax, regs.rcx);
+            }
+        },
         VmxLeaf::EXTENDED_PROCESSOR_SIGNATURE => {
             info!("CPUID extended processor signature");
             let signature = cpuid!(0x80000001, 0);
@@ -268,5 +290,117 @@ impl FeatureInfoEdx {
             | (self.tm as u32) << 29
             | (self._reserved_2 as u32) << 30
             | (self.pbe as u32) << 31
+    }
+}
+
+#[derive(Debug)]
+pub struct ExtFeatureEbx0 {
+    pub fsgsbase: bool,
+    pub tsc_adjust: bool,
+    pub sgx: bool,
+    pub bmi1: bool,
+    pub hle: bool,
+    pub avx2: bool,
+    pub fdp: bool,
+    pub smep: bool,
+    pub bmi2: bool,
+    pub erms: bool,
+    pub invpcid: bool,
+    pub rtm: bool,
+    pub rdtm: bool,
+    pub fpucsds: bool,
+    pub mpx: bool,
+    pub rdta: bool,
+    pub avx512f: bool,
+    pub avx512dq: bool,
+    pub rdseed: bool,
+    pub adx: bool,
+    pub smap: bool,
+    pub avx512ifma: bool,
+    pub _reserved1: bool,
+    pub clflushopt: bool,
+    pub clwb: bool,
+    pub pt: bool,
+    pub avx512pf: bool,
+    pub avx512er: bool,
+    pub avx512cd: bool,
+    pub sha: bool,
+    pub avx512bw: bool,
+    pub avx512vl: bool,
+}
+
+impl Default for ExtFeatureEbx0 {
+    fn default() -> Self {
+        Self {
+            fsgsbase: false,
+            tsc_adjust: false,
+            sgx: false,
+            bmi1: false,
+            hle: false,
+            avx2: false,
+            fdp: false,
+            smep: false,
+            bmi2: false,
+            erms: false,
+            invpcid: false,
+            rtm: false,
+            rdtm: false,
+            fpucsds: false,
+            mpx: false,
+            rdta: false,
+            avx512f: false,
+            avx512dq: false,
+            rdseed: false,
+            adx: false,
+            smap: false,
+            avx512ifma: false,
+            _reserved1: false,
+            clflushopt: false,
+            clwb: false,
+            pt: false,
+            avx512pf: false,
+            avx512er: false,
+            avx512cd: false,
+            sha: false,
+            avx512bw: false,
+            avx512vl: false,
+        }
+    }
+}
+
+impl ExtFeatureEbx0 {
+    pub fn as_u32(&self) -> u32 {
+        (self.fsgsbase as u32)
+            | (self.tsc_adjust as u32) << 1
+            | (self.sgx as u32) << 2
+            | (self.bmi1 as u32) << 3
+            | (self.hle as u32) << 4
+            | (self.avx2 as u32) << 5
+            | (self.fdp as u32) << 6
+            | (self.smep as u32) << 7
+            | (self.bmi2 as u32) << 8
+            | (self.erms as u32) << 9
+            | (self.invpcid as u32) << 10
+            | (self.rtm as u32) << 11
+            | (self.rdtm as u32) << 12
+            | (self.fpucsds as u32) << 13
+            | (self.mpx as u32) << 14
+            | (self.rdta as u32) << 15
+            | (self.avx512f as u32) << 16
+            | (self.avx512dq as u32) << 17
+            | (self.rdseed as u32) << 18
+            | (self.adx as u32) << 19
+            | (self.smap as u32) << 20
+            | (self.avx512ifma as u32) << 21
+            | (self._reserved1 as u32) << 22
+            | (self.clflushopt as u32) << 23
+            | (self.clwb as u32) << 24
+            | (self.pt as u32) << 25
+            | (self.avx512pf as u32) << 26
+            | (self.avx512er as u32) << 27
+            | (self.avx512cd as u32) << 28
+            | (self.sha as u32) << 29
+            | (self.avx512bw as u32) << 30
+            | (self.avx512vl as u32) << 31
     }
 }
