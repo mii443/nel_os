@@ -632,22 +632,18 @@ impl VCpu {
                     info!("HLT instruction executed");
                 }
                 VmxExitReason::CPUID => {
-                    info!("CPUID instruction executed");
                     cpuid::handle_cpuid_exit(self);
                     self.step_next_inst().unwrap();
                 }
                 VmxExitReason::RDMSR => {
-                    info!("RDMSR instruction executed");
                     msr::ShadowMsr::handle_rdmsr_vmexit(self);
                     self.step_next_inst().unwrap();
                 }
                 VmxExitReason::WRMSR => {
-                    info!("WRMSR instruction executed");
                     msr::ShadowMsr::handle_wrmsr_vmexit(self);
                     self.step_next_inst().unwrap();
                 }
                 VmxExitReason::CONTROL_REGISTER_ACCESSES => {
-                    info!("Control register access");
                     let qual = unsafe { vmread(vmcs::ro::EXIT_QUALIFICATION).unwrap() };
                     let qual = QualCr(qual);
                     cr::handle_cr_access(self, &qual);
