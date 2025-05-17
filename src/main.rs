@@ -57,7 +57,7 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
     }
 
     let mut vcpu = VCpu::new(phys_mem_offset.as_u64(), &mut frame_allocator);
-    vcpu.activate(&mut frame_allocator);
+    vcpu.activate(&mut frame_allocator, &mapper);
 
     #[cfg(not(test))]
     vcpu.vm_loop();

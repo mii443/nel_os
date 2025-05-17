@@ -1,4 +1,5 @@
-use rand::{Rng, SeedableRng};
+use core::u64;
+
 use x86::{
     bits64::vmx::{vmread, vmwrite},
     controlregs::{cr0, cr3, cr4, Cr0},
@@ -12,7 +13,8 @@ use crate::{
     info,
     memory::BootInfoFrameAllocator,
     vmm::{
-        cpuid, msr,
+        cpuid, cr, msr,
+        qual::QualCr,
         vmcs::{
             DescriptorType, EntryControls, Granularity, PrimaryExitControls,
             PrimaryProcessorBasedVmExecutionControls, SecondaryProcessorBasedVmExecutionControls,
@@ -41,6 +43,7 @@ pub struct VCpu {
     pub eptp: EPTP,
     pub host_msr: ShadowMsr,
     pub guest_msr: ShadowMsr,
+    pub ia32e_enabled: bool,
 }
 
 const TEMP_STACK_SIZE: usize = 4096;
@@ -64,10 +67,15 @@ impl VCpu {
             eptp,
             host_msr: ShadowMsr::new(),
             guest_msr: ShadowMsr::new(),
+            ia32e_enabled: false,
         }
     }
 
-    pub fn activate(&mut self, frame_allocator: &mut BootInfoFrameAllocator) {
+    pub fn activate(
+        &mut self,
+        frame_allocator: &mut BootInfoFrameAllocator,
+        mapper: &OffsetPageTable<'static>,
+    ) {
         self.vmxon.activate_vmxon().unwrap();
 
         let revision_id = unsafe { rdmsr(x86::msr::IA32_VMX_BASIC) } as u32;
@@ -80,6 +88,7 @@ impl VCpu {
         self.setup_host_state().unwrap();
         self.setup_guest_state().unwrap();
         self.setup_guest_memory(frame_allocator);
+        self.register_msrs(&mapper);
     }
 
     pub fn load_kernel(&mut self, kernel: &[u8]) {
@@ -144,33 +153,6 @@ impl VCpu {
         }
     }
 
-    pub fn test_guest_memory(&mut self) {
-        for x in 1..=1024 {
-            let mut gpa = 0;
-            let start = 100 * 1024 * (x - 1);
-
-            let mut random_data = [0u8; 100 * 1024];
-            let mut rng = rand::rngs::SmallRng::from_seed([0u8; 16]);
-            for byte in random_data.iter_mut() {
-                *byte = rng.gen();
-            }
-
-            self.load_image(&random_data, start);
-
-            while gpa < 100 * 1024 {
-                let value = self.ept.get((gpa + start) as u64).unwrap();
-                if value != random_data[gpa] {
-                    panic!("Guest memory test failed at {:#x}", gpa);
-                }
-                gpa += 1;
-            }
-        }
-
-        let start = 100 * 1024 * 0;
-        let end = 100 * 1024 * 1024;
-        self.ept.set_range(start as u64, end as u64, 0).unwrap();
-    }
-
     pub fn setup_guest_memory(&mut self, frame_allocator: &mut BootInfoFrameAllocator) {
         let mut pages = 100;
         let mut gpa = 0;
@@ -188,15 +170,13 @@ impl VCpu {
         }
         info!("Guest memory setup complete");
 
-        self.test_guest_memory();
-
         self.load_kernel(linux::BZIMAGE);
 
         let eptp = EPTP::new(&self.ept.root_table);
         unsafe { vmwrite(vmcs::control::EPTP_FULL, eptp.0).unwrap() };
     }
 
-    pub fn register_msrs(&mut self, mapper: OffsetPageTable<'static>) {
+    pub fn register_msrs(&mut self, mapper: &OffsetPageTable<'static>) {
         unsafe {
             // tsc_aux, star, lstar, cstar, fmask, kernel_gs_base.
             self.host_msr
@@ -306,7 +286,7 @@ impl VCpu {
 
         primary_exec_ctrl.0 |= (reserved_bits & 0xFFFFFFFF) as u32;
         primary_exec_ctrl.0 &= (reserved_bits >> 32) as u32;
-        primary_exec_ctrl.set_hlt(false);
+        primary_exec_ctrl.set_hlt(true);
         primary_exec_ctrl.set_activate_secondary_controls(true);
         primary_exec_ctrl.set_use_tpr_shadow(true);
         primary_exec_ctrl.set_use_msr_bitmap(false);
@@ -329,6 +309,11 @@ impl VCpu {
         secondary_exec_ctrl.set_unrestricted_guest(true);
 
         secondary_exec_ctrl.write();
+
+        unsafe {
+            vmwrite(vmcs::control::CR0_GUEST_HOST_MASK, u64::MAX).unwrap();
+            vmwrite(vmcs::control::CR4_GUEST_HOST_MASK, u64::MAX).unwrap();
+        }
 
         Ok(())
     }
@@ -558,7 +543,11 @@ impl VCpu {
 
             vmwrite(vmcs::guest::RIP, linux::LAYOUT_KERNEL_BASE as u64)?;
             self.guest_registers.rsi = linux::LAYOUT_BOOTPARAM as u64;
-            info!("Guest RIP: {:#x}", linux::LAYOUT_KERNEL_BASE as u64);
+
+            let cr0 = vmread(vmcs::guest::CR0)?;
+            let cr4 = vmread(vmcs::guest::CR4)?;
+            vmwrite(vmcs::control::CR0_READ_SHADOW, cr0)?;
+            vmwrite(vmcs::control::CR4_READ_SHADOW, cr4)?;
         }
 
         Ok(())
@@ -643,6 +632,7 @@ impl VCpu {
                     info!("HLT instruction executed");
                 }
                 VmxExitReason::CPUID => {
+                    info!("CPUID instruction executed");
                     cpuid::handle_cpuid_exit(self);
                     self.step_next_inst().unwrap();
                 }
@@ -654,6 +644,13 @@ impl VCpu {
                 VmxExitReason::WRMSR => {
                     info!("WRMSR instruction executed");
                     msr::ShadowMsr::handle_wrmsr_vmexit(self);
+                    self.step_next_inst().unwrap();
+                }
+                VmxExitReason::CONTROL_REGISTER_ACCESSES => {
+                    info!("Control register access");
+                    let qual = unsafe { vmread(vmcs::ro::EXIT_QUALIFICATION).unwrap() };
+                    let qual = QualCr(qual);
+                    cr::handle_cr_access(self, &qual);
                     self.step_next_inst().unwrap();
                 }
                 _ => {

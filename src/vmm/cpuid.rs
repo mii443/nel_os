@@ -1,17 +1,14 @@
 use raw_cpuid::cpuid;
 
-use crate::info;
-
 use super::{vcpu::VCpu, vmcs::VmxLeaf};
 
 pub fn handle_cpuid_exit(vcpu: &mut VCpu) {
     let regs = &mut vcpu.guest_registers;
-    let vendor: &[u8; 12] = b"miimiimiimii";
+    let vendor: &[u8; 12] = b"miHypervisor";
     let vendor = unsafe { core::mem::transmute::<&[u8; 12], &[u32; 3]>(vendor) };
     match VmxLeaf::from(regs.rax) {
         VmxLeaf::EXTENDED_FEATURE => match regs.rcx {
             0 => {
-                info!("CPUID extended feature");
                 let mut ebx = ExtFeatureEbx0::default();
                 ebx.smep = true;
                 ebx.invpcid = false;
@@ -32,7 +29,6 @@ pub fn handle_cpuid_exit(vcpu: &mut VCpu) {
             }
         },
         VmxLeaf::EXTENDED_PROCESSOR_SIGNATURE => {
-            info!("CPUID extended processor signature");
             let signature = cpuid!(0x80000001, 0);
             regs.rax = 0x00000000;
             regs.rbx = 0x00000000;
@@ -40,21 +36,18 @@ pub fn handle_cpuid_exit(vcpu: &mut VCpu) {
             regs.rdx = signature.edx as u64;
         }
         VmxLeaf::EXTENDED_FUNCTION => {
-            info!("CPUID extended function");
             regs.rax = 0x80000000 + 1;
             regs.rbx = 0x00000000;
             regs.rcx = 0x00000000;
             regs.rdx = 0x00000000;
         }
         VmxLeaf::MAXIMUM_INPUT => {
-            info!("CPUID max input");
             regs.rax = 0x20;
             regs.rbx = vendor[0] as u64;
-            regs.rcx = vendor[1] as u64;
-            regs.rdx = vendor[2] as u64;
+            regs.rcx = vendor[2] as u64;
+            regs.rdx = vendor[1] as u64;
         }
         VmxLeaf::VERSION_AND_FEATURE_INFO => {
-            info!("CPUID version and feature info");
             let ecx = FeatureInfoEcx {
                 sse3: false,
                 pclmulqdq: false,
@@ -130,7 +123,6 @@ pub fn handle_cpuid_exit(vcpu: &mut VCpu) {
             regs.rdx = edx.to_u32() as u64;
         }
         _ => {
-            info!("Unhandled CPUID leaf: {:#x}", regs.rax);
             invalid(vcpu);
         }
     };

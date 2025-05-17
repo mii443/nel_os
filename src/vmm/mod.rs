@@ -1,9 +1,11 @@
 pub mod asm;
 pub mod cpuid;
+pub mod cr;
 pub mod ept;
 pub mod error;
 pub mod linux;
 pub mod msr;
+pub mod qual;
 pub mod register;
 pub mod support;
 pub mod vcpu;

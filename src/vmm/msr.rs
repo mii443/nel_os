@@ -44,7 +44,7 @@ pub enum MsrError {
 
 impl ShadowMsr {
     pub fn new() -> Self {
-        let ents = vec![SavedMsr::default(); MAX_NUM_ENTS];
+        let ents = vec![];
 
         ShadowMsr { ents }
     }
@@ -108,7 +108,7 @@ impl ShadowMsr {
                 .set(msr_kind, Self::concat(regs.rdx, regs.rax))
                 .unwrap();
         } else {
-            panic!("MSR not found");
+            panic!("MSR not found: {:#x}", msr_kind);
         }
     }
 
