@@ -4,7 +4,6 @@ use lazy_static::lazy_static;
 use spin::Mutex;
 use volatile::Volatile;
 
-use crate::serial::SERIAL1;
 
 lazy_static! {
     pub static ref WRITER: Mutex<Writer> = Mutex::new(Writer {
@@ -37,15 +36,11 @@ macro_rules! error {
 
 #[doc(hidden)]
 pub fn _print(args: fmt::Arguments) {
-    use core::fmt::Write;
     use x86_64::instructions::interrupts;
 
     interrupts::without_interrupts(|| {
         //WRITER.lock().write_fmt(args).unwrap();
-        SERIAL1
-            .lock()
-            .write_fmt(args)
-            .expect("Printing to serial failed");
+        crate::serial::_print(args);
     });
 }
 

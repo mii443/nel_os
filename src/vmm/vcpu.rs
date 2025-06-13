@@ -1,6 +1,7 @@
 use core::{
     arch::x86_64::{_xgetbv, _xsetbv},
-    u64,
+    convert::TryInto,
+    u64, u8,
 };
 
 use x86::{
@@ -10,20 +11,24 @@ use x86::{
     msr::{rdmsr, IA32_EFER, IA32_FS_BASE},
     vmx::{vmcs, VmFail},
 };
-use x86_64::{registers::control::Cr4Flags, structures::paging::OffsetPageTable, VirtAddr};
+use x86_64::{
+    registers::control::Cr4Flags,
+    structures::paging::{FrameAllocator, OffsetPageTable},
+    VirtAddr,
+};
 
 use crate::{
     info,
     memory::BootInfoFrameAllocator,
     vmm::{
         cpuid, cr, fpu,
-        io::{self, Serial},
+        io::{self, Serial, PIC},
         msr,
         qual::{QualCr, QualIo},
         vmcs::{
             DescriptorType, EntryControls, Granularity, PrimaryExitControls,
             PrimaryProcessorBasedVmExecutionControls, SecondaryProcessorBasedVmExecutionControls,
-            SegmentRights, VmxExitInfo, VmxExitReason,
+            SegmentRights, VmxExitReason,
         },
     },
 };
@@ -53,6 +58,9 @@ pub struct VCpu {
     pub xcr0: XCR0,
     pub host_xcr0: u64,
     pub serial: Serial,
+    pub io_bitmap_a: x86_64::structures::paging::PhysFrame,
+    pub io_bitmap_b: x86_64::structures::paging::PhysFrame,
+    pub pic: PIC,
 }
 
 const TEMP_STACK_SIZE: usize = 4096;
@@ -65,6 +73,10 @@ impl VCpu {
         let vmcs = Vmcs::new(frame_allocator);
         let ept = EPT::new(frame_allocator);
         let eptp = EPTP::new(&ept.root_table);
+
+        // Allocate I/O bitmaps (4KB each)
+        let io_bitmap_a = frame_allocator.allocate_frame().unwrap();
+        let io_bitmap_b = frame_allocator.allocate_frame().unwrap();
 
         VCpu {
             vmxon,
@@ -80,6 +92,9 @@ impl VCpu {
             xcr0: XCR0(3),
             host_xcr0: 0,
             serial: Serial::default(),
+            io_bitmap_a,
+            io_bitmap_b,
+            pic: PIC::new(),
         }
     }
 
@@ -99,6 +114,7 @@ impl VCpu {
         self.setup_exit_ctrls().unwrap();
         self.setup_host_state().unwrap();
         self.setup_guest_state().unwrap();
+        self.setup_io_bitmaps();
         self.setup_guest_memory(frame_allocator);
         self.register_msrs(&mapper);
     }
@@ -304,11 +320,12 @@ impl VCpu {
 
         primary_exec_ctrl.0 |= (reserved_bits & 0xFFFFFFFF) as u32;
         primary_exec_ctrl.0 &= (reserved_bits >> 32) as u32;
-        primary_exec_ctrl.set_hlt(false);
+        primary_exec_ctrl.set_hlt(true);
         primary_exec_ctrl.set_activate_secondary_controls(true);
         primary_exec_ctrl.set_use_tpr_shadow(true);
         primary_exec_ctrl.set_use_msr_bitmap(false);
-        primary_exec_ctrl.set_unconditional_io(true);
+        primary_exec_ctrl.set_unconditional_io(false);
+        primary_exec_ctrl.set_use_io_bitmap(true);
 
         primary_exec_ctrl.write();
 
@@ -393,6 +410,59 @@ impl VCpu {
         };
 
         Ok(())
+    }
+
+    pub fn setup_io_bitmaps(&mut self) {
+        info!("Setting up I/O bitmaps");
+
+        let bitmap_a_vaddr = self.io_bitmap_a.start_address().as_u64() + self.phys_mem_offset;
+        let bitmap_b_vaddr = self.io_bitmap_b.start_address().as_u64() + self.phys_mem_offset;
+
+        unsafe {
+            core::ptr::write_bytes(bitmap_a_vaddr as *mut u8, u8::MAX, 4096);
+            core::ptr::write_bytes(bitmap_b_vaddr as *mut u8, u8::MAX, 4096);
+        }
+
+        let bitmap_a = unsafe { core::slice::from_raw_parts_mut(bitmap_a_vaddr as *mut u8, 4096) };
+        let bitmap_b = unsafe { core::slice::from_raw_parts_mut(bitmap_b_vaddr as *mut u8, 4096) };
+
+        self.set_io_ports(bitmap_a, bitmap_b, 0x02F8..=0x03FF);
+        self.set_io_ports(bitmap_a, bitmap_b, 0x0040..=0x0047);
+
+        unsafe {
+            vmwrite(
+                vmcs::control::IO_BITMAP_A_ADDR_FULL,
+                self.io_bitmap_a.start_address().as_u64(),
+            )
+            .unwrap();
+            vmwrite(
+                vmcs::control::IO_BITMAP_B_ADDR_FULL,
+                self.io_bitmap_b.start_address().as_u64(),
+            )
+            .unwrap();
+        }
+
+        info!("I/O bitmaps configured - PCI ports 0xC000-0xCFFF will trigger VM exits");
+    }
+
+    fn set_io_ports(
+        &self,
+        bitmap_a: &mut [u8],
+        bitmap_b: &mut [u8],
+        ports: core::ops::RangeInclusive<u16>,
+    ) {
+        for port in ports {
+            if port <= 0x7FFF {
+                let byte_index = port as usize / 8;
+                let bit_index = port as usize % 8;
+                bitmap_a[byte_index] &= !(1 << bit_index);
+            } else {
+                let adjusted_port = port - 0x8000;
+                let byte_index = adjusted_port as usize / 8;
+                let bit_index = adjusted_port as usize % 8;
+                bitmap_b[byte_index] &= !(1 << bit_index);
+            }
+        }
     }
 
     pub fn setup_host_state(&mut self) -> Result<(), VmFail> {
@@ -681,10 +751,11 @@ impl VCpu {
     }
 
     fn vmexit_handler(&mut self) {
-        let info = VmxExitInfo::read();
+        let exit_reason_raw = unsafe { vmread(vmcs::ro::EXIT_REASON).unwrap() as u32 };
 
-        if info.entry_failure() {
-            let reason = info.0 & 0xFF;
+        if (exit_reason_raw & (1 << 31)) != 0 {
+            // VM-entry failure
+            let reason = exit_reason_raw & 0xFF;
             match reason {
                 33 => {
                     info!("    Reason: VM-entry failure due to invalid guest state");
@@ -698,7 +769,9 @@ impl VCpu {
                 _ => {}
             }
         } else {
-            match info.get_reason() {
+            let basic_reason = (exit_reason_raw & 0xFFFF) as u16;
+            let exit_reason: VmxExitReason = basic_reason.try_into().unwrap();
+            match exit_reason {
                 VmxExitReason::HLT => {
                     info!("HLT instruction executed");
                 }
@@ -734,12 +807,13 @@ impl VCpu {
                 }
                 VmxExitReason::IO_INSTRUCTION => {
                     let qual = unsafe { vmread(vmcs::ro::EXIT_QUALIFICATION).unwrap() };
-                    let qual = QualIo(qual);
-                    io::handle_io(self, qual);
+                    let qual_io = QualIo(qual);
+
+                    io::handle_io(self, qual_io);
                     self.step_next_inst().unwrap();
                 }
                 _ => {
-                    panic!("VMExit reason: {:?}", info.get_reason());
+                    panic!("VMExit reason: {:?}", exit_reason);
                 }
             }
         }

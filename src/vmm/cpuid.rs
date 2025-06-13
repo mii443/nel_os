@@ -125,7 +125,7 @@ pub fn handle_cpuid_exit(vcpu: &mut VCpu) {
                 pae: true,
                 mce: false,
                 cx8: true,
-                apic: true,
+                apic: false,
                 _reserved_0: false,
                 sep: true,
                 mtrr: false,
