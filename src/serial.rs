@@ -1,3 +1,5 @@
+use core::fmt::Write;
+
 use lazy_static::lazy_static;
 use spin::Mutex;
 use uart_16550::SerialPort;
@@ -21,6 +23,19 @@ pub fn _print(args: ::core::fmt::Arguments) {
             .write_fmt(args)
             .expect("Printing to serial failed");
     });
+}
+
+#[inline(always)]
+pub fn write_byte(byte: u8) {
+    use x86_64::instructions::interrupts;
+
+    if interrupts::are_enabled() {
+        interrupts::without_interrupts(|| {
+            SERIAL1.lock().send(byte);
+        });
+    } else {
+        SERIAL1.lock().send(byte);
+    }
 }
 
 #[macro_export]

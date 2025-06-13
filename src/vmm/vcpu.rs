@@ -16,8 +16,10 @@ use crate::{
     info,
     memory::BootInfoFrameAllocator,
     vmm::{
-        cpuid, cr, fpu, msr,
-        qual::QualCr,
+        cpuid, cr, fpu,
+        io::{self, Serial},
+        msr,
+        qual::{QualCr, QualIo},
         vmcs::{
             DescriptorType, EntryControls, Granularity, PrimaryExitControls,
             PrimaryProcessorBasedVmExecutionControls, SecondaryProcessorBasedVmExecutionControls,
@@ -50,6 +52,7 @@ pub struct VCpu {
     pub ia32e_enabled: bool,
     pub xcr0: XCR0,
     pub host_xcr0: u64,
+    pub serial: Serial,
 }
 
 const TEMP_STACK_SIZE: usize = 4096;
@@ -76,6 +79,7 @@ impl VCpu {
             ia32e_enabled: false,
             xcr0: XCR0(3),
             host_xcr0: 0,
+            serial: Serial::default(),
         }
     }
 
@@ -694,7 +698,6 @@ impl VCpu {
                 _ => {}
             }
         } else {
-            info!("RIP: {:#x}", unsafe { vmread(vmcs::guest::RIP) }.unwrap());
             match info.get_reason() {
                 VmxExitReason::HLT => {
                     info!("HLT instruction executed");
@@ -730,7 +733,9 @@ impl VCpu {
                     self.step_next_inst().unwrap();
                 }
                 VmxExitReason::IO_INSTRUCTION => {
-                    info!("IO instruction executed");
+                    let qual = unsafe { vmread(vmcs::ro::EXIT_QUALIFICATION).unwrap() };
+                    let qual = QualIo(qual);
+                    io::handle_io(self, qual);
                     self.step_next_inst().unwrap();
                 }
                 _ => {

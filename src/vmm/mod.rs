@@ -4,6 +4,7 @@ pub mod cr;
 pub mod ept;
 pub mod error;
 pub mod fpu;
+pub mod io;
 pub mod linux;
 pub mod msr;
 pub mod qual;

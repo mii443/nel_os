@@ -131,10 +131,10 @@ bitfield! {
     pub struct QualIo(u64);
     impl Debug;
 
-    u8, size, set_size: 3, 0;
-    u8, direction, set_direction: 4, 4;
-    u8, string, set_string: 5, 5;
-    u8, rep, set_rep: 6, 6;
-    u8, operand_encoding, set_operand_encoding: 7, 7;
-    u16, port, set_port: 31, 16;
+    pub u8, size, set_size: 3, 0;
+    pub u8, direction, set_direction: 4, 4;
+    pub u8, string, set_string: 5, 5;
+    pub u8, rep, set_rep: 6, 6;
+    pub u8, operand_encoding, set_operand_encoding: 7, 7;
+    pub u16, port, set_port: 31, 16;
 }
