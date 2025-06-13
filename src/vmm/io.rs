@@ -30,6 +30,7 @@ pub fn handle_io_in(vcpu: &mut VCpu, qual: QualIo) {
             regs.rax = 0;
         }
         0xC000..0xCFFF => {} //ignore
+
         0x03F..0x03FF => handle_serial_in(vcpu, qual),
         _ => {
             panic!("IO in: invalid port: {:#x}", qual.port());
