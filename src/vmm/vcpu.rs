@@ -1,4 +1,7 @@
-use core::u64;
+use core::{
+    arch::x86_64::{_xgetbv, _xsetbv},
+    u64,
+};
 
 use x86::{
     bits64::vmx::{vmread, vmwrite},
@@ -13,7 +16,7 @@ use crate::{
     info,
     memory::BootInfoFrameAllocator,
     vmm::{
-        cpuid, cr, msr,
+        cpuid, cr, fpu, msr,
         qual::QualCr,
         vmcs::{
             DescriptorType, EntryControls, Granularity, PrimaryExitControls,
@@ -25,6 +28,7 @@ use crate::{
 
 use super::{
     ept::{EPT, EPTP},
+    fpu::XCR0,
     linux::{self, BootParams, E820Type},
     msr::ShadowMsr,
     register::GuestRegisters,
@@ -44,6 +48,8 @@ pub struct VCpu {
     pub host_msr: ShadowMsr,
     pub guest_msr: ShadowMsr,
     pub ia32e_enabled: bool,
+    pub xcr0: XCR0,
+    pub host_xcr0: u64,
 }
 
 const TEMP_STACK_SIZE: usize = 4096;
@@ -68,6 +74,8 @@ impl VCpu {
             host_msr: ShadowMsr::new(),
             guest_msr: ShadowMsr::new(),
             ia32e_enabled: false,
+            xcr0: XCR0(3),
+            host_xcr0: 0,
         }
     }
 
@@ -200,6 +208,9 @@ impl VCpu {
                     rdmsr(x86::msr::IA32_KERNEL_GSBASE) as u64,
                 )
                 .unwrap();
+            self.host_msr
+                .set(x86::msr::MSR_C5_PMON_BOX_CTRL, 0)
+                .unwrap();
 
             self.guest_msr.set(x86::msr::IA32_TSC_AUX, 0).unwrap();
             self.guest_msr.set(x86::msr::IA32_STAR, 0).unwrap();
@@ -207,6 +218,9 @@ impl VCpu {
             self.guest_msr.set(x86::msr::IA32_CSTAR, 0).unwrap();
             self.guest_msr.set(x86::msr::IA32_FMASK, 0).unwrap();
             self.guest_msr.set(x86::msr::IA32_KERNEL_GSBASE, 0).unwrap();
+            self.guest_msr
+                .set(x86::msr::MSR_C5_PMON_BOX_CTRL, 0)
+                .unwrap();
 
             vmwrite(
                 vmcs::control::VMEXIT_MSR_LOAD_ADDR_FULL,
@@ -286,10 +300,11 @@ impl VCpu {
 
         primary_exec_ctrl.0 |= (reserved_bits & 0xFFFFFFFF) as u32;
         primary_exec_ctrl.0 &= (reserved_bits >> 32) as u32;
-        primary_exec_ctrl.set_hlt(true);
+        primary_exec_ctrl.set_hlt(false);
         primary_exec_ctrl.set_activate_secondary_controls(true);
         primary_exec_ctrl.set_use_tpr_shadow(true);
         primary_exec_ctrl.set_use_msr_bitmap(false);
+        primary_exec_ctrl.set_unconditional_io(true);
 
         primary_exec_ctrl.write();
 
@@ -365,6 +380,14 @@ impl VCpu {
 
         exit_ctrl.write();
 
+        unsafe {
+            vmwrite(
+                vmcs::control::EXCEPTION_BITMAP,
+                0, /*(1u64 << irq::INVALID_OPCODE_VECTOR)*/
+            )
+            .unwrap();
+        };
+
         Ok(())
     }
 
@@ -373,7 +396,10 @@ impl VCpu {
         unsafe {
             vmwrite(vmcs::host::CR0, cr0().bits() as u64)?;
             vmwrite(vmcs::host::CR3, cr3())?;
-            vmwrite(vmcs::host::CR4, cr4().bits() as u64)?;
+            vmwrite(
+                vmcs::host::CR4,
+                cr4().bits() as u64 | Cr4Flags::OSXSAVE.bits(),
+            )?;
 
             vmwrite(vmcs::host::RIP, crate::vmm::asm::asm_vmexit_handler as u64)?;
             vmwrite(
@@ -433,10 +459,7 @@ impl VCpu {
             vmwrite(vmcs::guest::CR3, cr3())?;
             vmwrite(
                 vmcs::guest::CR4,
-                vmread(vmcs::guest::CR4)?
-                    | 1 << 5
-                    | 1 << 7
-                    | Cr4Flags::VIRTUAL_MACHINE_EXTENSIONS.bits(),
+                vmread(vmcs::guest::CR4)? | Cr4Flags::VIRTUAL_MACHINE_EXTENSIONS.bits(),
             )?;
 
             vmwrite(vmcs::guest::CS_BASE, 0)?;
@@ -570,13 +593,57 @@ impl VCpu {
         }
     }
 
+    fn load_guest_xcr0(&mut self) -> Result<(), VmFail> {
+        let host_cr4 = unsafe { cr4() };
+        if (host_cr4.bits() & Cr4Flags::OSXSAVE.bits() as usize) == 0 {
+            return Ok(());
+        }
+
+        if self.host_xcr0 == 0 {
+            self.host_xcr0 = unsafe { _xgetbv(0) };
+        }
+
+        let guest_cr4 = unsafe { vmread(vmcs::guest::CR4)? };
+
+        if guest_cr4 & Cr4Flags::OSXSAVE.bits() != 0 && self.xcr0.0 != self.host_xcr0 {
+            unsafe {
+                _xsetbv(0, self.xcr0.0);
+            }
+        }
+
+        Ok(())
+    }
+
+    fn load_host_xcr0(&mut self) -> Result<(), VmFail> {
+        let host_cr4 = unsafe { cr4() };
+        if (host_cr4.bits() & Cr4Flags::OSXSAVE.bits() as usize) == 0 {
+            return Ok(());
+        }
+
+        let guest_cr4 = unsafe { vmread(vmcs::guest::CR4)? };
+
+        if guest_cr4 & Cr4Flags::OSXSAVE.bits() != 0 {
+            let current_xcr0 = unsafe { _xgetbv(0) };
+            if current_xcr0 != self.host_xcr0 {
+                self.xcr0 = XCR0(current_xcr0);
+                unsafe {
+                    _xsetbv(0, self.host_xcr0);
+                }
+            }
+        }
+
+        Ok(())
+    }
+
     fn vmentry(&mut self) -> Result<(), InstructionError> {
         let success = {
             let result: u16;
 
+            self.load_guest_xcr0().unwrap();
             unsafe {
                 result = crate::vmm::asm::asm_vm_entry(self as *mut _);
             };
+            self.load_host_xcr0().unwrap();
             result == 0
         };
 
@@ -627,6 +694,7 @@ impl VCpu {
                 _ => {}
             }
         } else {
+            info!("RIP: {:#x}", unsafe { vmread(vmcs::guest::RIP) }.unwrap());
             match info.get_reason() {
                 VmxExitReason::HLT => {
                     info!("HLT instruction executed");
@@ -647,6 +715,22 @@ impl VCpu {
                     let qual = unsafe { vmread(vmcs::ro::EXIT_QUALIFICATION).unwrap() };
                     let qual = QualCr(qual);
                     cr::handle_cr_access(self, &qual);
+                    self.step_next_inst().unwrap();
+                }
+                VmxExitReason::XSETBV => {
+                    fpu::set_xcr(
+                        self,
+                        self.guest_registers.rcx as u32,
+                        self.guest_registers.rax,
+                    )
+                    .unwrap();
+                    self.step_next_inst().unwrap();
+                }
+                VmxExitReason::EXCEPTION => {
+                    self.step_next_inst().unwrap();
+                }
+                VmxExitReason::IO_INSTRUCTION => {
+                    info!("IO instruction executed");
                     self.step_next_inst().unwrap();
                 }
                 _ => {

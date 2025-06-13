@@ -6,8 +6,6 @@ use x86::{
     vmx::vmcs,
 };
 
-use crate::info;
-
 use super::{
     qual::{AccessType, QualCr, Register},
     vcpu::VCpu,

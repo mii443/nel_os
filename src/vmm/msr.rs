@@ -128,7 +128,7 @@ impl ShadowMsr {
             }
             x86::msr::IA32_KERNEL_GSBASE => Self::shadow_read(vcpu, msr_kind),
             _ => {
-                panic!("Unhandled RDMSR: {}", msr_kind);
+                panic!("Unhandled RDMSR: {:#x}", msr_kind);
             }
         }
     }
@@ -145,6 +145,7 @@ impl ShadowMsr {
             x86::msr::IA32_TSC_AUX => Self::shadow_write(vcpu, msr_kind),
             x86::msr::IA32_FMASK => Self::shadow_write(vcpu, msr_kind),
             x86::msr::IA32_KERNEL_GSBASE => Self::shadow_write(vcpu, msr_kind),
+            x86::msr::MSR_C5_PMON_BOX_CTRL => Self::shadow_write(vcpu, msr_kind),
             x86::msr::SYSENTER_CS_MSR => unsafe {
                 vmwrite(vmcs::guest::IA32_SYSENTER_CS, value).unwrap()
             },
@@ -157,8 +158,9 @@ impl ShadowMsr {
             x86::msr::IA32_EFER => unsafe { vmwrite(vmcs::guest::IA32_EFER_FULL, value).unwrap() },
             x86::msr::IA32_FS_BASE => unsafe { vmwrite(vmcs::guest::FS_BASE, value).unwrap() },
             x86::msr::IA32_GS_BASE => unsafe { vmwrite(vmcs::guest::GS_BASE, value).unwrap() },
+
             _ => {
-                panic!("Unhandled WRMSR: {}", msr_kind);
+                panic!("Unhandled WRMSR: {:#x}", msr_kind);
             }
         }
     }

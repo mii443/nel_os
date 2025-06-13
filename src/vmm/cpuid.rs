@@ -1,17 +1,48 @@
+use crate::info;
 use raw_cpuid::cpuid;
 
 use super::{vcpu::VCpu, vmcs::VmxLeaf};
 
 pub fn handle_cpuid_exit(vcpu: &mut VCpu) {
     let regs = &mut vcpu.guest_registers;
-    //let vendor: &[u8; 12] = b"miHypervisor";
-    let vendor: &[u8; 12] = b"KVMKVMKVMKVM";
+    let vendor: &[u8; 12] = b"miHypervisor";
 
     let vendor = unsafe { core::mem::transmute::<&[u8; 12], &[u32; 3]>(vendor) };
+
     match VmxLeaf::from(regs.rax) {
+        VmxLeaf::EXTENDED_ENUMERATION => {
+            info!("CPUID: {:#x}.{:#x}", regs.rax, regs.rcx);
+            match regs.rcx {
+                0 => {
+                    // EAX: supported XSAVE features (x87=bit0, SSE=bit1)
+                    regs.rax = 0b11; // Only x87 and SSE supported
+                    regs.rbx = 576; // Size required for enabled features
+                    regs.rcx = 576; // Size required for all features
+                    regs.rdx = 0x00000000;
+                }
+                1 => {
+                    // EAX: XSAVEOPT and extended features
+                    regs.rax = 0x00000001; // XSAVEOPT supported
+                    regs.rbx = 0; // Size of enabled features in compacted format
+                    regs.rcx = 0; // Lower 32 bits of XCR0 | IA32_XSS
+                    regs.rdx = 0; // Upper 32 bits of XCR0 | IA32_XSS
+                }
+                2 => {
+                    // x87 state component
+                    regs.rax = 512; // Size of x87 state
+                    regs.rbx = 0; // Offset in save area
+                    regs.rcx = 0; // Not used for legacy components
+                    regs.rdx = 0; // Not used for legacy components
+                }
+                _ => {
+                    invalid(vcpu);
+                }
+            }
+        }
         VmxLeaf::EXTENDED_FEATURE => match regs.rcx {
             0 => {
                 let mut ebx = ExtFeatureEbx0::default();
+                ebx.fsgsbase = false;
                 ebx.smep = true;
                 ebx.invpcid = false;
                 ebx.smap = true;
@@ -70,15 +101,15 @@ pub fn handle_cpuid_exit(vcpu: &mut VCpu) {
                 _reserved_0: false,
                 pcid: true,
                 dca: false,
-                sse4_1: false,
-                sse4_2: false,
+                sse4_1: true,
+                sse4_2: true,
                 x2apic: false,
                 movbe: false,
                 popcnt: false,
                 tsc_deadline: false,
                 aesni: false,
-                xsave: false,
-                osxsave: false,
+                xsave: true,
+                osxsave: true,
                 avx: false,
                 f16c: false,
                 rdrand: false,
@@ -94,7 +125,7 @@ pub fn handle_cpuid_exit(vcpu: &mut VCpu) {
                 pae: true,
                 mce: false,
                 cx8: true,
-                apic: false,
+                apic: true,
                 _reserved_0: false,
                 sep: true,
                 mtrr: false,
@@ -118,9 +149,14 @@ pub fn handle_cpuid_exit(vcpu: &mut VCpu) {
                 _reserved_2: false,
                 pbe: false,
             };
-            let cpuid = cpuid!(0x1, 0);
-            regs.rax = cpuid.eax as u64;
-            regs.rbx = cpuid.ebx as u64;
+            let mut version_and_feature_info = cpuid!(0x1, 0);
+            let feature = cpuid!(0x0, 0);
+            if !((feature.ecx & (1 << 17)) == 1) {
+                version_and_feature_info.ecx &= !(1 << 17);
+            }
+
+            regs.rax = version_and_feature_info.eax as u64;
+            regs.rbx = version_and_feature_info.ebx as u64;
             regs.rcx = ecx.to_u32() as u64;
             regs.rdx = edx.to_u32() as u64;
         }
@@ -132,6 +168,7 @@ pub fn handle_cpuid_exit(vcpu: &mut VCpu) {
 
 fn invalid(vcpu: &mut VCpu) {
     let regs = &mut vcpu.guest_registers;
+    //info!("Invalid CPUID: {:#x}.{:#x}", regs.rax, regs.rcx);
 
     regs.rax = 0;
     regs.rbx = 0;
