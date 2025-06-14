@@ -653,3 +653,38 @@ impl VmxLeaf {
         }
     }
 }
+
+/*
+pub const EntryIntrInfo = packed struct(u32) {
+    vector: u8,
+    type: Type,
+    ec_available: bool,
+    _notused: u19 = 0,
+    valid: bool,
+
+    const Type = enum(u3) {
+        external = 0,
+        _unused1 = 1,
+        nmi = 2,
+        hw = 3,
+        _unused2 = 4,
+        priviledged_sw = 5,
+        exception = 6,
+        _unused3 = 7,
+    };
+
+    const Kind = enum {
+        entry,
+        exit,
+    };
+}; */
+
+bitfield! {
+    pub struct EntryIntrInfo(u32);
+    impl Debug;
+
+    pub vector, set_vector: 7, 0;
+    pub typ, set_type: 10, 8;
+    pub ec_available, set_ec_available: 11;
+    pub valid, set_valid: 31;
+}

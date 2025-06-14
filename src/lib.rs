@@ -11,6 +11,12 @@ extern crate alloc;
 pub mod allocator;
 pub mod gdt;
 pub mod interrupts;
+
+// Re-export commonly used interrupt functionality
+pub use interrupts::{
+    subscribe, unsubscribe, subscribe_with_context, unsubscribe_with_context,
+    InterruptContext, SubscriberCallback, AdvancedSubscriberCallback
+};
 pub mod memory;
 pub mod serial;
 pub mod vga_buffer;

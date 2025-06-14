@@ -1,4 +1,5 @@
 use core::{
+    arch::asm,
     arch::x86_64::{_xgetbv, _xsetbv},
     convert::TryInto,
     u64, u8,
@@ -18,15 +19,17 @@ use x86_64::{
 };
 
 use crate::{
-    info,
+    hlt_loop, info,
+    interrupts::vmm_subscriber,
     memory::BootInfoFrameAllocator,
+    subscribe_with_context,
     vmm::{
         cpuid, cr, fpu,
-        io::{self, Serial, PIC},
+        io::{self, InitPhase, Serial, PIC},
         msr,
         qual::{QualCr, QualIo},
         vmcs::{
-            DescriptorType, EntryControls, Granularity, PrimaryExitControls,
+            DescriptorType, EntryControls, EntryIntrInfo, Granularity, PrimaryExitControls,
             PrimaryProcessorBasedVmExecutionControls, SecondaryProcessorBasedVmExecutionControls,
             SegmentRights, VmxExitReason,
         },
@@ -61,6 +64,7 @@ pub struct VCpu {
     pub io_bitmap_a: x86_64::structures::paging::PhysFrame,
     pub io_bitmap_b: x86_64::structures::paging::PhysFrame,
     pub pic: PIC,
+    pub pending_irq: u16,
 }
 
 const TEMP_STACK_SIZE: usize = 4096;
@@ -95,6 +99,7 @@ impl VCpu {
             io_bitmap_a,
             io_bitmap_b,
             pic: PIC::new(),
+            pending_irq: 0,
         }
     }
 
@@ -305,6 +310,7 @@ impl VCpu {
 
         pin_exec_ctrl.0 |= (reserved_bits & 0xFFFFFFFF) as u32;
         pin_exec_ctrl.0 &= (reserved_bits >> 32) as u32;
+        pin_exec_ctrl.set_external_interrupt_exiting(true);
 
         pin_exec_ctrl.write();
 
@@ -320,7 +326,7 @@ impl VCpu {
 
         primary_exec_ctrl.0 |= (reserved_bits & 0xFFFFFFFF) as u32;
         primary_exec_ctrl.0 &= (reserved_bits >> 32) as u32;
-        primary_exec_ctrl.set_hlt(true);
+        primary_exec_ctrl.set_hlt(false);
         primary_exec_ctrl.set_activate_secondary_controls(true);
         primary_exec_ctrl.set_use_tpr_shadow(true);
         primary_exec_ctrl.set_use_msr_bitmap(false);
@@ -658,6 +664,11 @@ impl VCpu {
     pub fn vm_loop(&mut self) -> ! {
         info!("Entering VM loop");
 
+        let vcpu: &mut VCpu = self;
+        let vcpu_ptr = vcpu as *mut VCpu as *mut core::ffi::c_void;
+        subscribe_with_context(vmm_subscriber, vcpu_ptr)
+            .expect("Failed to subscribe to vmm_subscriber");
+
         loop {
             if let Err(err) = self.vmentry() {
                 info!("VMEntry failed: {}", err.as_str());
@@ -735,6 +746,73 @@ impl VCpu {
         Ok(())
     }
 
+    fn inject_external_interrupt(&mut self) -> Result<bool, VmFail> {
+        info!("Injecting external interrupt");
+        let pending = self.pending_irq;
+
+        if pending == 0 {
+            return Ok(false);
+        }
+
+        if self.pic.primary_phase != InitPhase::Initialized {
+            return Ok(false);
+        }
+
+        let eflags = unsafe { vmread(vmcs::guest::RFLAGS) }?;
+        if eflags >> 9 & 1 == 0 {
+            return Ok(false);
+        }
+
+        let is_secondary_masked = (self.pic.primary_mask >> 2) & 1 != 0;
+
+        for i in 0..16 {
+            if is_secondary_masked && i >= 8 {
+                break;
+            }
+
+            let irq_bit = 1 << i;
+            if pending & irq_bit == 0 {
+                continue;
+            }
+
+            let delta = if i < 8 { i } else { i - 8 };
+            let is_masked = if i < 8 {
+                (self.pic.primary_mask >> delta) & 1 != 0
+            } else {
+                let is_ieq_masked = (self.pic.secondary_mask >> delta) & 1 != 0;
+                is_secondary_masked || is_ieq_masked
+            };
+
+            if is_masked {
+                continue;
+            }
+
+            let mut interrupt_info = EntryIntrInfo(0);
+            interrupt_info.set_vector(
+                delta as u32
+                    + if i < 8 {
+                        self.pic.primary_base as u32
+                    } else {
+                        self.pic.secondary_base as u32
+                    },
+            );
+            interrupt_info.set_type(0);
+            interrupt_info.set_ec_available(false);
+            interrupt_info.set_valid(true);
+            unsafe {
+                vmwrite(
+                    vmcs::control::VMENTRY_INTERRUPTION_INFO_FIELD,
+                    interrupt_info.0 as u64,
+                )?;
+            }
+
+            self.pending_irq &= !irq_bit;
+            return Ok(true);
+        }
+
+        Ok(false)
+    }
+
     #[no_mangle]
     unsafe extern "C" fn set_host_stack(rsp: u64) {
         vmwrite(vmcs::host::RSP, rsp).unwrap();
@@ -773,7 +851,19 @@ impl VCpu {
             let exit_reason: VmxExitReason = basic_reason.try_into().unwrap();
             match exit_reason {
                 VmxExitReason::HLT => {
-                    info!("HLT instruction executed");
+                    while self.inject_external_interrupt().is_err() {
+                        unsafe {
+                            asm!("sti");
+                            asm!("nop");
+                            asm!("cli");
+                        }
+                    }
+
+                    unsafe {
+                        vmwrite(vmcs::guest::ACTIVITY_STATE, 0).unwrap();
+                        vmwrite(vmcs::guest::INTERRUPTIBILITY_STATE, 0).unwrap();
+                    }
+                    self.step_next_inst().unwrap();
                 }
                 VmxExitReason::CPUID => {
                     cpuid::handle_cpuid_exit(self);
@@ -810,6 +900,15 @@ impl VCpu {
                     let qual_io = QualIo(qual);
 
                     io::handle_io(self, qual_io);
+                    self.step_next_inst().unwrap();
+                }
+                VmxExitReason::EXTERNAL_INTERRUPT => {
+                    unsafe {
+                        asm!("sti");
+                        asm!("nop");
+                        asm!("cli");
+                    }
+                    self.inject_external_interrupt().unwrap();
                     self.step_next_inst().unwrap();
                 }
                 _ => {

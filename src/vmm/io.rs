@@ -6,6 +6,8 @@ pub struct Serial {
     pub mcr: u8,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+
 pub enum InitPhase {
     Uninitialized,
     Phase1,
