@@ -107,32 +107,135 @@ impl EPT {
         Ok(())
     }
 
+    pub fn map_4k(
+        &mut self,
+        gpa: u64,
+        hpa: u64,
+        allocator: &mut impl FrameAllocator<Size4KiB>,
+    ) -> Result<(), &'static str> {
+        let lv4_index = (gpa >> 39) & 0x1FF;
+        let lv3_index = (gpa >> 30) & 0x1FF;
+        let lv2_index = (gpa >> 21) & 0x1FF;
+        let lv1_index = (gpa >> 12) & 0x1FF;
+
+        let lv4_table = Self::frame_to_table_ptr(&self.root_table);
+        let lv4_entry = &mut lv4_table[lv4_index as usize];
+
+        let lv3_table = if !lv4_entry.present() {
+            let frame = allocator
+                .allocate_frame()
+                .ok_or("Failed to allocate frame for L3 table")?;
+            let table_ptr = Self::init_table(&frame);
+            lv4_entry.set_phys(frame.start_address().as_u64() >> 12);
+            lv4_entry.set_map_memory(false);
+            lv4_entry.set_typ(0);
+            lv4_entry.set_read(true);
+            lv4_entry.set_write(true);
+            lv4_entry.set_exec_super(true);
+            table_ptr
+        } else {
+            let frame =
+                PhysFrame::from_start_address(PhysAddr::new(lv4_entry.phys() << 12)).unwrap();
+            Self::frame_to_table_ptr(&frame)
+        };
+
+        let lv3_entry = &mut lv3_table[lv3_index as usize];
+
+        let lv2_table = if !lv3_entry.present() {
+            let frame = allocator
+                .allocate_frame()
+                .ok_or("Failed to allocate frame for L2 table")?;
+            let table_ptr = Self::init_table(&frame);
+            lv3_entry.set_phys(frame.start_address().as_u64() >> 12);
+            lv3_entry.set_map_memory(false);
+            lv3_entry.set_typ(0);
+            lv3_entry.set_read(true);
+            lv3_entry.set_write(true);
+            lv3_entry.set_exec_super(true);
+            table_ptr
+        } else {
+            let frame =
+                PhysFrame::from_start_address(PhysAddr::new(lv3_entry.phys() << 12)).unwrap();
+            Self::frame_to_table_ptr(&frame)
+        };
+
+        let lv2_entry = &mut lv2_table[lv2_index as usize];
+        
+        let lv1_table = if !lv2_entry.present() || lv2_entry.map_memory() {
+            let frame = allocator
+                .allocate_frame()
+                .ok_or("Failed to allocate frame for L1 table")?;
+            let table_ptr = Self::init_table(&frame);
+            lv2_entry.set_phys(frame.start_address().as_u64() >> 12);
+            lv2_entry.set_map_memory(false);
+            lv2_entry.set_typ(0);
+            lv2_entry.set_read(true);
+            lv2_entry.set_write(true);
+            lv2_entry.set_exec_super(true);
+            table_ptr
+        } else {
+            let frame =
+                PhysFrame::from_start_address(PhysAddr::new(lv2_entry.phys() << 12)).unwrap();
+            Self::frame_to_table_ptr(&frame)
+        };
+
+        let lv1_entry = &mut lv1_table[lv1_index as usize];
+        lv1_entry.set_phys(hpa >> 12);
+        lv1_entry.set_map_memory(true);
+        lv1_entry.set_typ(0);
+        lv1_entry.set_read(true);
+        lv1_entry.set_write(true);
+        lv1_entry.set_exec_super(true);
+
+        Ok(())
+    }
+
     pub fn get_phys_addr(&self, gpa: u64) -> Option<u64> {
         let lv4_index = (gpa >> 39) & 0x1FF;
         let lv3_index = (gpa >> 30) & 0x1FF;
         let lv2_index = (gpa >> 21) & 0x1FF;
-        let page_offset = gpa & 0x1FFFFF;
+        let lv1_index = (gpa >> 12) & 0x1FF;
 
         let lv4_table = Self::frame_to_table_ptr(&self.root_table);
         let lv4_entry = &lv4_table[lv4_index as usize];
+
+        if !lv4_entry.present() {
+            return None;
+        }
 
         let frame = PhysFrame::from_start_address(PhysAddr::new(lv4_entry.phys() << 12)).unwrap();
         let lv3_table = Self::frame_to_table_ptr(&frame);
         let lv3_entry = &lv3_table[lv3_index as usize];
 
+        if !lv3_entry.present() {
+            return None;
+        }
+
         let frame = PhysFrame::from_start_address(PhysAddr::new(lv3_entry.phys() << 12)).unwrap();
         let lv2_table = Self::frame_to_table_ptr(&frame);
         let lv2_entry = &lv2_table[lv2_index as usize];
 
-        if !lv2_entry.map_memory() {
-            info!("EPT: No mapping found for GPA: {:#x}", gpa);
-            info!("{:#x}", lv2_entry.address().as_u64());
-            info!("{:#x}", lv2_entry as *const _ as u64);
+        if !lv2_entry.present() {
             return None;
         }
 
-        let phys_addr_base = lv2_entry.address().as_u64();
-        Some(phys_addr_base | page_offset)
+        if lv2_entry.map_memory() {
+            let page_offset = gpa & 0x1FFFFF;
+            let phys_addr_base = lv2_entry.address().as_u64();
+            Some(phys_addr_base | page_offset)
+        } else {
+            let frame = PhysFrame::from_start_address(PhysAddr::new(lv2_entry.phys() << 12)).unwrap();
+            let lv1_table = Self::frame_to_table_ptr(&frame);
+            let lv1_entry = &lv1_table[lv1_index as usize];
+
+            if !lv1_entry.present() || !lv1_entry.map_memory() {
+                return None;
+            }
+
+            let page_offset = gpa & 0xFFF;
+            let phys_addr_base = lv1_entry.address().as_u64();
+            Some(phys_addr_base | page_offset)
+        }
     }
 
     pub fn get(&mut self, gpa: u64) -> Result<u8, &'static str> {

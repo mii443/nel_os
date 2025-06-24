@@ -6,7 +6,7 @@ pub const INITRD: &'static [u8] = include_bytes!("../../rootfs-n.cpio.gz");
 pub const LAYOUT_BOOTPARAM: u64 = 0x0001_0000;
 pub const LAYOUT_CMDLINE: u64 = 0x0002_0000;
 pub const LAYOUT_KERNEL_BASE: u64 = 0x0010_0000;
-pub const LAYOUT_INITRD: u64 = 0x0600_0000;
+pub const LAYOUT_INITRD: u64 = 0x0800_0000;
 
 #[repr(C, packed)]
 #[derive(Debug, Clone, Copy)]

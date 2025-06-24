@@ -14,7 +14,7 @@ const ALIGN_2MIB_MASK: u64 = SIZE_2MIB - 1;
 pub struct BootInfoFrameAllocator {
     memory_map: &'static MemoryMap,
     next: usize,
-    aligned_regions: [(u64, u64); 32],
+    aligned_regions: [(u64, u64); 256],
     aligned_count: usize,
 }
 
@@ -23,7 +23,7 @@ impl BootInfoFrameAllocator {
         let mut allocator = Self {
             memory_map,
             next: 0,
-            aligned_regions: [(0, 0); 32],
+            aligned_regions: [(0, 0); 256],
             aligned_count: 0,
         };
 

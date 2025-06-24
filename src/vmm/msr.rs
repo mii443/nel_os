@@ -132,6 +132,7 @@ impl ShadowMsr {
                 Self::set_ret_val(vcpu, unsafe { vmread(vmcs::guest::GS_BASE).unwrap() })
             }
             x86::msr::IA32_KERNEL_GSBASE => Self::shadow_read(vcpu, msr_kind),
+            0x1b => Self::shadow_read(vcpu, msr_kind),
             _ => {
                 panic!("Unhandled RDMSR: {:#x}", msr_kind);
             }
@@ -170,6 +171,7 @@ impl ShadowMsr {
             x86::msr::IA32_EFER => unsafe { vmwrite(vmcs::guest::IA32_EFER_FULL, value).unwrap() },
             x86::msr::IA32_FS_BASE => unsafe { vmwrite(vmcs::guest::FS_BASE, value).unwrap() },
             x86::msr::IA32_GS_BASE => unsafe { vmwrite(vmcs::guest::GS_BASE, value).unwrap() },
+            0x1b => Self::shadow_write(vcpu, msr_kind),
 
             _ => {
                 panic!("Unhandled WRMSR: {:#x}", msr_kind);

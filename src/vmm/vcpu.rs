@@ -2,6 +2,7 @@ use core::{
     arch::asm,
     arch::x86_64::{_xgetbv, _xsetbv},
     convert::TryInto,
+    sync::atomic::{AtomicPtr, Ordering},
     u64, u8,
 };
 
@@ -47,6 +48,10 @@ use super::{
     vmxon::Vmxon,
 };
 
+const SIZE_2MIB: u64 = 2 * 1024 * 1024;
+
+static EPT_FRAME_ALLOCATOR: AtomicPtr<BootInfoFrameAllocator> = AtomicPtr::new(core::ptr::null_mut());
+
 #[repr(C)]
 pub struct VCpu {
     pub guest_registers: GuestRegisters,
@@ -76,22 +81,22 @@ impl VCpu {
         // Read guest CR3
         let cr3 = unsafe { vmread(vmcs::guest::CR3).map_err(|_| "Failed to read guest CR3")? };
         let pml4_base = cr3 & !0xFFF; // Clear lower 12 bits to get page table base
-        
+
         // Check if guest is in long mode (64-bit)
         let efer = unsafe { vmread(vmcs::guest::IA32_EFER_FULL).unwrap_or(0) };
         let is_long_mode = (efer & (1 << 8)) != 0; // LME bit
-        
+
         if !is_long_mode {
             return Ok(vaddr & 0xFFFFFFFF);
         }
-        
+
         // Extract page table indices for 4-level paging
         let pml4_idx = ((vaddr >> 39) & 0x1FF) as u64;
         let pdpt_idx = ((vaddr >> 30) & 0x1FF) as u64;
         let pd_idx = ((vaddr >> 21) & 0x1FF) as u64;
         let pt_idx = ((vaddr >> 12) & 0x1FF) as u64;
         let page_offset = (vaddr & 0xFFF) as u64;
-        
+
         // Walk PML4
         let pml4_entry_addr = pml4_base + (pml4_idx * 8);
         let pml4_entry = self.read_guest_phys_u64(pml4_entry_addr)?;
@@ -99,7 +104,7 @@ impl VCpu {
             return Err("PML4 entry not present");
         }
         let pdpt_base = pml4_entry & 0x000FFFFFFFFFF000;
-        
+
         // Walk PDPT
         let pdpt_entry_addr = pdpt_base + (pdpt_idx * 8);
         let pdpt_entry = self.read_guest_phys_u64(pdpt_entry_addr)?;
@@ -112,7 +117,7 @@ impl VCpu {
             return Ok(page_base | (vaddr & 0x3FFFFFFF));
         }
         let pd_base = pdpt_entry & 0x000FFFFFFFFFF000;
-        
+
         // Walk PD
         let pd_entry_addr = pd_base + (pd_idx * 8);
         let pd_entry = self.read_guest_phys_u64(pd_entry_addr)?;
@@ -125,7 +130,7 @@ impl VCpu {
             return Ok(page_base | (vaddr & 0x1FFFFF));
         }
         let pt_base = pd_entry & 0x000FFFFFFFFFF000;
-        
+
         // Walk PT
         let pt_entry_addr = pt_base + (pt_idx * 8);
         let pt_entry = self.read_guest_phys_u64(pt_entry_addr)?;
@@ -133,21 +138,20 @@ impl VCpu {
             return Err("PT entry not present");
         }
         let page_base = pt_entry & 0x000FFFFFFFFFF000;
-        
+
         Ok(page_base | page_offset)
     }
-    
-    /// Read 8 bytes from guest physical address
+
     fn read_guest_phys_u64(&mut self, gpa: u64) -> Result<u64, &'static str> {
         let mut result_bytes = [0u8; 8];
-        
+
         for i in 0..8 {
             match self.ept.get(gpa + i) {
                 Ok(byte) => result_bytes[i as usize] = byte,
                 Err(_) => return Err("Failed to read from EPT"),
             }
         }
-        
+
         Ok(u64::from_le_bytes(result_bytes))
     }
 
@@ -188,6 +192,8 @@ impl VCpu {
         frame_allocator: &mut BootInfoFrameAllocator,
         mapper: &OffsetPageTable<'static>,
     ) {
+        EPT_FRAME_ALLOCATOR.store(frame_allocator as *mut _, Ordering::Release);
+        
         self.vmxon.activate_vmxon().unwrap();
 
         let revision_id = unsafe { rdmsr(x86::msr::IA32_VMX_BASIC) } as u32;
@@ -200,13 +206,12 @@ impl VCpu {
         self.setup_host_state().unwrap();
         self.setup_guest_state().unwrap();
         self.setup_io_bitmaps();
-        self.setup_guest_memory(frame_allocator);
+        let _ = self.setup_guest_memory(frame_allocator);
         self.register_msrs(&mapper);
     }
 
-    pub fn load_kernel(&mut self, kernel: &[u8]) {
+    pub fn load_kernel(&mut self, kernel: &[u8], guest_mem_size: u64) {
         info!("Loading kernel into guest memory");
-        let guest_mem_size = 100 * 1024 * 1024;
         let mut bp = BootParams::from_bytes(kernel).unwrap();
         bp.e820_entries = 0;
 
@@ -236,12 +241,9 @@ impl VCpu {
 
         let cmdline_start = linux::LAYOUT_CMDLINE as u64;
         let cmdline_end = cmdline_start + cmdline_max_size as u64;
-        self.ept.set_range(cmdline_start, cmdline_end, 0).unwrap();
-        let cmdline_val = "console=ttyS0 earlyprintk=serial nokaslr";
-        let cmdline_bytes = cmdline_val.as_bytes();
-        for (i, &byte) in cmdline_bytes.iter().enumerate() {
-            self.ept.set(cmdline_start + i as u64, byte).unwrap();
-        }
+        
+        let cmdline_bytes = b"console=ttyS0 earlyprintk=serial nokaslr\0";
+        self.load_image(cmdline_bytes, cmdline_start as usize);
 
         let bp_bytes = unsafe {
             core::slice::from_raw_parts(
@@ -257,39 +259,61 @@ impl VCpu {
             &kernel[code_offset..code_offset + code_size],
             linux::LAYOUT_KERNEL_BASE as usize,
         );
+
+        info!(
+            "Loading initrd at {:#x}, size: {} bytes",
+            linux::LAYOUT_INITRD,
+            linux::INITRD.len()
+        );
         self.load_image(linux::INITRD, linux::LAYOUT_INITRD as usize);
 
         info!("Kernel loaded into guest memory");
     }
 
     pub fn load_image(&mut self, image: &[u8], addr: usize) {
+        info!("Loading image at {:#x}, size: {} bytes", addr, image.len());
+        
+        let start_page = addr & !0xFFF;
+        let end_page = ((addr + image.len() - 1) & !0xFFF) + 0x1000;
+        
+        unsafe {
+            let frame_allocator_ptr = EPT_FRAME_ALLOCATOR.load(Ordering::Acquire);
+            if !frame_allocator_ptr.is_null() {
+                let frame_allocator = &mut *(frame_allocator_ptr as *mut BootInfoFrameAllocator);
+                
+                let mut current_page = start_page;
+                while current_page < end_page {
+                    if self.ept.get_phys_addr(current_page as u64).is_none() {
+                        if let Some(frame) = frame_allocator.allocate_frame() {
+                            let hpa = frame.start_address().as_u64();
+                            self.ept.map_4k(current_page as u64, hpa, frame_allocator).unwrap();
+                        } else {
+                            panic!("Failed to allocate frame for image at {:#x}", current_page);
+                        }
+                    }
+                    current_page += 0x1000;
+                }
+            }
+        }
+        
         for (i, &byte) in image.iter().enumerate() {
             let gpa = addr + i;
             self.ept.set(gpa as u64, byte).unwrap();
         }
     }
 
-    pub fn setup_guest_memory(&mut self, frame_allocator: &mut BootInfoFrameAllocator) {
-        let mut pages = 1000;
-        let mut gpa = 0;
+    pub fn setup_guest_memory(&mut self, frame_allocator: &mut BootInfoFrameAllocator) -> u64 {
+        let guest_memory_size = 2 * 1024 * 1024 * 1024;
 
-        info!("Setting up guest memory...");
-        while pages > 0 {
-            let frame = frame_allocator
-                .allocate_2mib_frame()
-                .expect("Failed to allocate frame");
-            let hpa = frame.start_address().as_u64();
+        info!("Setting up guest memory with on-demand allocation (reported size: {}MB)", 
+              guest_memory_size / (1024 * 1024));
 
-            self.ept.map_2m(gpa, hpa, frame_allocator).unwrap();
-            gpa += (4 * 1024) << 9;
-            pages -= 1;
-        }
-        info!("Guest memory setup complete");
-
-        self.load_kernel(linux::BZIMAGE);
+        self.load_kernel(linux::BZIMAGE, guest_memory_size);
 
         let eptp = EPTP::new(&self.ept.root_table);
         unsafe { vmwrite(vmcs::control::EPTP_FULL, eptp.0).unwrap() };
+
+        guest_memory_size
     }
 
     pub fn register_msrs(&mut self, mapper: &OffsetPageTable<'static>) {
@@ -329,6 +353,7 @@ impl VCpu {
             self.guest_msr
                 .set(x86::msr::MSR_C5_PMON_BOX_CTRL, 0)
                 .unwrap();
+            self.guest_msr.set(0x1b, 0).unwrap();
 
             vmwrite(
                 vmcs::control::VMEXIT_MSR_LOAD_ADDR_FULL,
@@ -617,13 +642,18 @@ impl VCpu {
         info!("Setting up guest state");
 
         unsafe {
-            let cr0 = (Cr0::empty() | Cr0::CR0_PROTECTED_MODE | Cr0::CR0_NUMERIC_ERROR)
+            let cr0 = (Cr0::empty()
+                | Cr0::CR0_PROTECTED_MODE
+                | Cr0::CR0_NUMERIC_ERROR
+                | Cr0::CR0_EXTENSION_TYPE)
                 & !Cr0::CR0_ENABLE_PAGING;
             vmwrite(vmcs::guest::CR0, cr0.bits() as u64)?;
-            vmwrite(vmcs::guest::CR3, cr3())?;
+            vmwrite(vmcs::guest::CR3, 0)?;
             vmwrite(
                 vmcs::guest::CR4,
-                vmread(vmcs::guest::CR4)? | Cr4Flags::VIRTUAL_MACHINE_EXTENSIONS.bits(),
+                vmread(vmcs::guest::CR4)?
+                    | Cr4Flags::VIRTUAL_MACHINE_EXTENSIONS.bits()
+                        & !Cr4Flags::PHYSICAL_ADDRESS_EXTENSION.bits(),
             )?;
 
             vmwrite(vmcs::guest::CS_BASE, 0)?;
@@ -949,6 +979,34 @@ impl VCpu {
         }
     }
 
+    fn handle_ept_violation(&mut self, gpa: u64) {
+        if gpa >= 2 * 1024 * 1024 * 1024 {
+            panic!("EPT Violation: Guest tried to access memory beyond 2GB at {:#x}", gpa);
+        }
+
+        unsafe {
+            let frame_allocator_ptr = EPT_FRAME_ALLOCATOR.load(Ordering::Acquire);
+            if frame_allocator_ptr.is_null() {
+                panic!("EPT Violation: Frame allocator not initialized!");
+            }
+            
+            let frame_allocator = &mut *(frame_allocator_ptr as *mut BootInfoFrameAllocator);
+            
+            match frame_allocator.allocate_frame() {
+                Some(frame) => {
+                    let hpa = frame.start_address().as_u64();
+                    
+                    if let Err(e) = self.ept.map_4k(gpa, hpa, frame_allocator) {
+                        panic!("Failed to map page at GPA {:#x}: {}", gpa, e);
+                    }
+                }
+                None => {
+                    panic!("EPT Violation: Out of memory! Cannot allocate frame for GPA {:#x}", gpa);
+                }
+            }
+        }
+    }
+
     fn vmexit_handler(&mut self) {
         let exit_reason_raw = unsafe { vmread(vmcs::ro::EXIT_REASON).unwrap() as u32 };
 
@@ -1037,7 +1095,6 @@ impl VCpu {
                     self.step_next_inst().unwrap();
                 }
                 VmxExitReason::EXCEPTION => {
-
                     // Get exception information
                     let vmexit_intr_info =
                         unsafe { vmread(vmcs::ro::VMEXIT_INTERRUPTION_INFO).unwrap() };
@@ -1054,11 +1111,11 @@ impl VCpu {
 
                     // show guest RIP
                     let rip = unsafe { vmread(vmcs::guest::RIP).unwrap() };
-                    
+
                     // Read the instruction bytes at RIP
                     let mut instruction_bytes = [0u8; 16];
                     let mut valid_bytes = 0;
-                    
+
                     // Try to translate the virtual address to physical address
                     match self.translate_guest_address(rip) {
                         Ok(guest_phys_addr) => {
@@ -1087,7 +1144,7 @@ impl VCpu {
                             }
                         }
                     }
-                    
+
                     if valid_bytes > 0 {
                         match instruction_bytes[0] {
                             0x0F => {
@@ -1096,19 +1153,23 @@ impl VCpu {
                                         0x01 => match instruction_bytes[2] {
                                             0xCA => {
                                                 self.step_next_inst().unwrap();
-                                            },
+                                            }
                                             0xCB => {
                                                 self.step_next_inst().unwrap();
-                                            },
+                                            }
                                             _ => {
                                                 self.inject_exception(vector, error_code).unwrap();
                                             }
                                         },
-                                        _ => {self.inject_exception(vector, error_code).unwrap();},
+                                        _ => {
+                                            self.inject_exception(vector, error_code).unwrap();
+                                        }
                                     }
                                 }
                             }
-                            _ => {self.inject_exception(vector, error_code).unwrap();},
+                            _ => {
+                                self.inject_exception(vector, error_code).unwrap();
+                            }
                         }
                     }
                 }
@@ -1135,8 +1196,19 @@ impl VCpu {
                 VmxExitReason::EPT_VIOLATION => {
                     let guest_address =
                         unsafe { vmread(vmcs::ro::GUEST_PHYSICAL_ADDR_FULL).unwrap() };
-                    info!("EPT Violation at address: {:#x}", guest_address);
-                    self.step_next_inst().unwrap();
+                    let exit_qualification =
+                        unsafe { vmread(vmcs::ro::EXIT_QUALIFICATION).unwrap() };
+                    let guest_rip = unsafe { vmread(vmcs::guest::RIP).unwrap() };
+
+                    let read_access = (exit_qualification & 0x1) != 0;
+                    let write_access = (exit_qualification & 0x2) != 0;
+                    let execute_access = (exit_qualification & 0x4) != 0;
+                    let gpa_valid = (exit_qualification & 0x80) != 0;
+                    let translation_valid = (exit_qualification & 0x100) != 0;
+
+                    let page_addr = guest_address & !0xFFF;
+                    
+                    self.handle_ept_violation(page_addr);
                 }
                 _ => {
                     panic!("VMExit reason: {:?}", exit_reason);
