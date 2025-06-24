@@ -185,6 +185,18 @@ extern "x86-interrupt" fn double_fault_handler(
     stack_frame: InterruptStackFrame,
     _error_code: u64,
 ) -> ! {
+    let context = InterruptContext {
+        vector: 8, // Double fault exception vector
+        instruction_pointer: stack_frame.instruction_pointer.as_u64(),
+        code_segment: stack_frame.code_segment,
+        cpu_flags: stack_frame.cpu_flags,
+        stack_pointer: stack_frame.stack_pointer.as_u64(),
+        stack_segment: stack_frame.stack_segment,
+    };
+
+    // Notify subscribers first
+    dispatch_to_subscribers(&context);
+
     panic!("EXCEPTION: DOUBLE FAULT\n{:#?}", stack_frame);
 }
 

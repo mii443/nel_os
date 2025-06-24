@@ -1,3 +1,4 @@
+use crate::info;
 use crate::vmm::{qual::QualIo, vcpu::VCpu};
 
 #[derive(Default)]
@@ -111,7 +112,10 @@ pub fn handle_pic_out(vcpu: &mut VCpu, qual: QualIo) {
             InitPhase::Phase2 => {
                 pic.primary_phase = InitPhase::Phase3;
             }
-            InitPhase::Phase3 => pic.primary_phase = InitPhase::Initialized,
+            InitPhase::Phase3 => {
+                info!("Primary PIC Initialized");
+                pic.primary_phase = InitPhase::Initialized
+            }
         },
         0xA0 => match dx {
             0x11 => pic.secondary_phase = InitPhase::Phase1,
@@ -127,7 +131,10 @@ pub fn handle_pic_out(vcpu: &mut VCpu, qual: QualIo) {
             InitPhase::Phase2 => {
                 pic.secondary_phase = InitPhase::Phase3;
             }
-            InitPhase::Phase3 => pic.secondary_phase = InitPhase::Initialized,
+            InitPhase::Phase3 => {
+                info!("Secondary PIC Initialized");
+                pic.secondary_phase = InitPhase::Initialized
+            }
         },
         _ => {}
     }

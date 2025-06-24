@@ -122,6 +122,10 @@ impl PinBasedVmExecutionControls {
         self.0.set_bit(0, value);
     }
 
+    pub fn set_interrupt_window_exiting(&mut self, value: bool) {
+        self.0.set_bit(2, value);
+    }
+
     pub fn set_nmi_exiting(&mut self, value: bool) {
         self.0.set_bit(3, value);
     }
@@ -653,31 +657,6 @@ impl VmxLeaf {
         }
     }
 }
-
-/*
-pub const EntryIntrInfo = packed struct(u32) {
-    vector: u8,
-    type: Type,
-    ec_available: bool,
-    _notused: u19 = 0,
-    valid: bool,
-
-    const Type = enum(u3) {
-        external = 0,
-        _unused1 = 1,
-        nmi = 2,
-        hw = 3,
-        _unused2 = 4,
-        priviledged_sw = 5,
-        exception = 6,
-        _unused3 = 7,
-    };
-
-    const Kind = enum {
-        entry,
-        exit,
-    };
-}; */
 
 bitfield! {
     pub struct EntryIntrInfo(u32);

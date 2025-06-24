@@ -9,6 +9,7 @@ use x86::{
     bits64::vmx::{vmread, vmwrite},
     controlregs::{cr0, cr3, cr4, Cr0},
     dtables::{self, DescriptorTablePointer},
+    irq,
     msr::{rdmsr, IA32_EFER, IA32_FS_BASE},
     vmx::{vmcs, VmFail},
 };
@@ -19,7 +20,7 @@ use x86_64::{
 };
 
 use crate::{
-    hlt_loop, info,
+    info,
     interrupts::vmm_subscriber,
     memory::BootInfoFrameAllocator,
     subscribe_with_context,
@@ -71,6 +72,85 @@ const TEMP_STACK_SIZE: usize = 4096;
 static mut TEMP_STACK: [u8; TEMP_STACK_SIZE + 0x10] = [0; TEMP_STACK_SIZE + 0x10];
 
 impl VCpu {
+    fn translate_guest_address(&mut self, vaddr: u64) -> Result<u64, &'static str> {
+        // Read guest CR3
+        let cr3 = unsafe { vmread(vmcs::guest::CR3).map_err(|_| "Failed to read guest CR3")? };
+        let pml4_base = cr3 & !0xFFF; // Clear lower 12 bits to get page table base
+        
+        // Check if guest is in long mode (64-bit)
+        let efer = unsafe { vmread(vmcs::guest::IA32_EFER_FULL).unwrap_or(0) };
+        let is_long_mode = (efer & (1 << 8)) != 0; // LME bit
+        
+        if !is_long_mode {
+            return Ok(vaddr & 0xFFFFFFFF);
+        }
+        
+        // Extract page table indices for 4-level paging
+        let pml4_idx = ((vaddr >> 39) & 0x1FF) as u64;
+        let pdpt_idx = ((vaddr >> 30) & 0x1FF) as u64;
+        let pd_idx = ((vaddr >> 21) & 0x1FF) as u64;
+        let pt_idx = ((vaddr >> 12) & 0x1FF) as u64;
+        let page_offset = (vaddr & 0xFFF) as u64;
+        
+        // Walk PML4
+        let pml4_entry_addr = pml4_base + (pml4_idx * 8);
+        let pml4_entry = self.read_guest_phys_u64(pml4_entry_addr)?;
+        if (pml4_entry & 1) == 0 {
+            return Err("PML4 entry not present");
+        }
+        let pdpt_base = pml4_entry & 0x000FFFFFFFFFF000;
+        
+        // Walk PDPT
+        let pdpt_entry_addr = pdpt_base + (pdpt_idx * 8);
+        let pdpt_entry = self.read_guest_phys_u64(pdpt_entry_addr)?;
+        if (pdpt_entry & 1) == 0 {
+            return Err("PDPT entry not present");
+        }
+        // Check for 1GB page
+        if (pdpt_entry & (1 << 7)) != 0 {
+            let page_base = pdpt_entry & 0x000FFFFFC0000000;
+            return Ok(page_base | (vaddr & 0x3FFFFFFF));
+        }
+        let pd_base = pdpt_entry & 0x000FFFFFFFFFF000;
+        
+        // Walk PD
+        let pd_entry_addr = pd_base + (pd_idx * 8);
+        let pd_entry = self.read_guest_phys_u64(pd_entry_addr)?;
+        if (pd_entry & 1) == 0 {
+            return Err("PD entry not present");
+        }
+        // Check for 2MB page
+        if (pd_entry & (1 << 7)) != 0 {
+            let page_base = pd_entry & 0x000FFFFFFFE00000;
+            return Ok(page_base | (vaddr & 0x1FFFFF));
+        }
+        let pt_base = pd_entry & 0x000FFFFFFFFFF000;
+        
+        // Walk PT
+        let pt_entry_addr = pt_base + (pt_idx * 8);
+        let pt_entry = self.read_guest_phys_u64(pt_entry_addr)?;
+        if (pt_entry & 1) == 0 {
+            return Err("PT entry not present");
+        }
+        let page_base = pt_entry & 0x000FFFFFFFFFF000;
+        
+        Ok(page_base | page_offset)
+    }
+    
+    /// Read 8 bytes from guest physical address
+    fn read_guest_phys_u64(&mut self, gpa: u64) -> Result<u64, &'static str> {
+        let mut result_bytes = [0u8; 8];
+        
+        for i in 0..8 {
+            match self.ept.get(gpa + i) {
+                Ok(byte) => result_bytes[i as usize] = byte,
+                Err(_) => return Err("Failed to read from EPT"),
+            }
+        }
+        
+        Ok(u64::from_le_bytes(result_bytes))
+    }
+
     pub fn new(phys_mem_offset: u64, frame_allocator: &mut BootInfoFrameAllocator) -> Self {
         let mut vmxon = Vmxon::new(frame_allocator);
         vmxon.init(phys_mem_offset);
@@ -138,6 +218,8 @@ impl VCpu {
         bp.hdr.loadflags.set_keep_segments(true);
         bp.hdr.cmd_line_ptr = linux::LAYOUT_CMDLINE as u32;
         bp.hdr.vid_mode = 0xFFFF;
+        bp.hdr.ramdisk_image = linux::LAYOUT_INITRD as u32;
+        bp.hdr.ramdisk_size = linux::INITRD.len() as u32;
 
         bp.add_e820_entry(0, linux::LAYOUT_KERNEL_BASE, E820Type::Ram);
         bp.add_e820_entry(
@@ -175,6 +257,7 @@ impl VCpu {
             &kernel[code_offset..code_offset + code_size],
             linux::LAYOUT_KERNEL_BASE as usize,
         );
+        self.load_image(linux::INITRD, linux::LAYOUT_INITRD as usize);
 
         info!("Kernel loaded into guest memory");
     }
@@ -187,7 +270,7 @@ impl VCpu {
     }
 
     pub fn setup_guest_memory(&mut self, frame_allocator: &mut BootInfoFrameAllocator) {
-        let mut pages = 100;
+        let mut pages = 1000;
         let mut gpa = 0;
 
         info!("Setting up guest memory...");
@@ -326,9 +409,9 @@ impl VCpu {
 
         primary_exec_ctrl.0 |= (reserved_bits & 0xFFFFFFFF) as u32;
         primary_exec_ctrl.0 &= (reserved_bits >> 32) as u32;
-        primary_exec_ctrl.set_hlt(false);
+        primary_exec_ctrl.set_hlt(true);
         primary_exec_ctrl.set_activate_secondary_controls(true);
-        primary_exec_ctrl.set_use_tpr_shadow(true);
+        primary_exec_ctrl.set_use_tpr_shadow(false);
         primary_exec_ctrl.set_use_msr_bitmap(false);
         primary_exec_ctrl.set_unconditional_io(false);
         primary_exec_ctrl.set_use_io_bitmap(true);
@@ -349,6 +432,7 @@ impl VCpu {
         secondary_exec_ctrl.0 &= (reserved_bits >> 32) as u32;
         secondary_exec_ctrl.set_ept(true);
         secondary_exec_ctrl.set_unrestricted_guest(true);
+        secondary_exec_ctrl.set_virtualize_apic_accesses(false);
 
         secondary_exec_ctrl.write();
 
@@ -410,7 +494,7 @@ impl VCpu {
         unsafe {
             vmwrite(
                 vmcs::control::EXCEPTION_BITMAP,
-                0, /*(1u64 << irq::INVALID_OPCODE_VECTOR)*/
+                1u64 << irq::INVALID_OPCODE_VECTOR,
             )
             .unwrap();
         };
@@ -747,8 +831,9 @@ impl VCpu {
     }
 
     fn inject_external_interrupt(&mut self) -> Result<bool, VmFail> {
-        info!("Injecting external interrupt");
         let pending = self.pending_irq;
+
+        //info!("Injecting external interrupt: pending IRQs: {:#x}", pending);
 
         if pending == 0 {
             return Ok(false);
@@ -760,6 +845,13 @@ impl VCpu {
 
         let eflags = unsafe { vmread(vmcs::guest::RFLAGS) }?;
         if eflags >> 9 & 1 == 0 {
+            return Ok(false);
+        }
+
+        // Check guest interruptibility state
+        let interruptibility = unsafe { vmread(vmcs::guest::INTERRUPTIBILITY_STATE)? };
+        if interruptibility & 0x3 != 0 {
+            // STI-blocking (bit 0) or MOV SS-blocking (bit 1)
             return Ok(false);
         }
 
@@ -813,6 +905,35 @@ impl VCpu {
         Ok(false)
     }
 
+    fn inject_exception(&mut self, vector: u32, error_code: Option<u32>) -> Result<(), VmFail> {
+        let mut interrupt_info = EntryIntrInfo(0);
+        interrupt_info.set_vector(vector);
+        interrupt_info.set_type(3); // 3 = Hardware exception
+
+        // Check if this exception requires an error code
+        let has_error_code = match vector {
+            8 | 10..=14 | 17 | 21 => true, // DF, TS, NP, SS, GP, PF, AC, CP
+            _ => false,
+        };
+
+        interrupt_info.set_ec_available(has_error_code);
+        interrupt_info.set_valid(true);
+
+        unsafe {
+            vmwrite(
+                vmcs::control::VMENTRY_INTERRUPTION_INFO_FIELD,
+                interrupt_info.0 as u64,
+            )?;
+
+            // If error code is required, write it
+            if has_error_code {
+                let ec = error_code.unwrap_or(0);
+                vmwrite(vmcs::control::VMENTRY_EXCEPTION_ERR_CODE, ec as u64)?;
+            }
+        }
+        Ok(())
+    }
+
     #[no_mangle]
     unsafe extern "C" fn set_host_stack(rsp: u64) {
         vmwrite(vmcs::host::RSP, rsp).unwrap();
@@ -830,6 +951,23 @@ impl VCpu {
 
     fn vmexit_handler(&mut self) {
         let exit_reason_raw = unsafe { vmread(vmcs::ro::EXIT_REASON).unwrap() as u32 };
+
+        // Check if an interrupt was being delivered when VM-exit occurred
+        use crate::vmm::vmcs::VmcsReadOnlyData32;
+        let idt_vectoring_info = VmcsReadOnlyData32::IDT_VECTORING_INFORMATION_FIELD
+            .read()
+            .unwrap() as u64;
+        if idt_vectoring_info & (1 << 31) != 0 {
+            // Valid bit is set - an interrupt was being delivered
+            // We need to reinject this interrupt
+            unsafe {
+                vmwrite(
+                    vmcs::control::VMENTRY_INTERRUPTION_INFO_FIELD,
+                    idt_vectoring_info,
+                )
+                .unwrap();
+            }
+        }
 
         if (exit_reason_raw & (1 << 31)) != 0 {
             // VM-entry failure
@@ -851,7 +989,13 @@ impl VCpu {
             let exit_reason: VmxExitReason = basic_reason.try_into().unwrap();
             match exit_reason {
                 VmxExitReason::HLT => {
-                    while self.inject_external_interrupt().is_err() {
+                    // Don't clear VMENTRY_INTERRUPTION_INFO_FIELD here - it may contain a reinjected interrupt
+
+                    // Check if we have interrupts to inject
+                    let injected = self.inject_external_interrupt().unwrap_or(false);
+
+                    if !injected {
+                        // No interrupt was injected, wait for one
                         unsafe {
                             asm!("sti");
                             asm!("nop");
@@ -893,7 +1037,80 @@ impl VCpu {
                     self.step_next_inst().unwrap();
                 }
                 VmxExitReason::EXCEPTION => {
-                    self.step_next_inst().unwrap();
+
+                    // Get exception information
+                    let vmexit_intr_info =
+                        unsafe { vmread(vmcs::ro::VMEXIT_INTERRUPTION_INFO).unwrap() };
+                    let vector = (vmexit_intr_info & 0xFF) as u32;
+                    let has_error_code = (vmexit_intr_info & (1 << 11)) != 0;
+
+                    let error_code = if has_error_code {
+                        Some(unsafe {
+                            vmread(vmcs::ro::VMEXIT_INTERRUPTION_ERR_CODE).unwrap() as u32
+                        })
+                    } else {
+                        None
+                    };
+
+                    // show guest RIP
+                    let rip = unsafe { vmread(vmcs::guest::RIP).unwrap() };
+                    
+                    // Read the instruction bytes at RIP
+                    let mut instruction_bytes = [0u8; 16];
+                    let mut valid_bytes = 0;
+                    
+                    // Try to translate the virtual address to physical address
+                    match self.translate_guest_address(rip) {
+                        Ok(guest_phys_addr) => {
+                            for i in 0..16 {
+                                match self.ept.get(guest_phys_addr + i) {
+                                    Ok(byte) => {
+                                        instruction_bytes[i as usize] = byte;
+                                        valid_bytes = i + 1;
+                                    }
+                                    Err(_) => break,
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            // Try reading directly as physical address if translation fails
+                            if rip < 0x100000000 {
+                                for i in 0..16 {
+                                    match self.ept.get(rip + i) {
+                                        Ok(byte) => {
+                                            instruction_bytes[i as usize] = byte;
+                                            valid_bytes = i + 1;
+                                        }
+                                        Err(_) => break,
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    
+                    if valid_bytes > 0 {
+                        match instruction_bytes[0] {
+                            0x0F => {
+                                if valid_bytes > 1 {
+                                    match instruction_bytes[1] {
+                                        0x01 => match instruction_bytes[2] {
+                                            0xCA => {
+                                                self.step_next_inst().unwrap();
+                                            },
+                                            0xCB => {
+                                                self.step_next_inst().unwrap();
+                                            },
+                                            _ => {
+                                                self.inject_exception(vector, error_code).unwrap();
+                                            }
+                                        },
+                                        _ => {self.inject_exception(vector, error_code).unwrap();},
+                                    }
+                                }
+                            }
+                            _ => {self.inject_exception(vector, error_code).unwrap();},
+                        }
+                    }
                 }
                 VmxExitReason::IO_INSTRUCTION => {
                     let qual = unsafe { vmread(vmcs::ro::EXIT_QUALIFICATION).unwrap() };
@@ -903,12 +1120,22 @@ impl VCpu {
                     self.step_next_inst().unwrap();
                 }
                 VmxExitReason::EXTERNAL_INTERRUPT => {
+                    // Clear any pending injection info first
+                    unsafe {
+                        vmwrite(vmcs::control::VMENTRY_INTERRUPTION_INFO_FIELD, 0).unwrap();
+                    }
+
                     unsafe {
                         asm!("sti");
                         asm!("nop");
                         asm!("cli");
                     }
                     self.inject_external_interrupt().unwrap();
+                }
+                VmxExitReason::EPT_VIOLATION => {
+                    let guest_address =
+                        unsafe { vmread(vmcs::ro::GUEST_PHYSICAL_ADDR_FULL).unwrap() };
+                    info!("EPT Violation at address: {:#x}", guest_address);
                     self.step_next_inst().unwrap();
                 }
                 _ => {

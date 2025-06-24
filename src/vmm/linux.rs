@@ -1,6 +1,7 @@
 use core::ptr::read_unaligned;
 
 pub const BZIMAGE: &'static [u8] = include_bytes!("../../bzImage");
+pub const INITRD: &'static [u8] = include_bytes!("../../rootfs-n.cpio.gz");
 
 pub const LAYOUT_BOOTPARAM: u64 = 0x0001_0000;
 pub const LAYOUT_CMDLINE: u64 = 0x0002_0000;

@@ -31,7 +31,6 @@ bitfield! {
 }
 
 pub fn set_xcr(vcpu: &mut VCpu, index: u32, xcr: u64) -> Result<(), ()> {
-    info!("Setting XCR0: index={}, xcr={:x}", index, xcr);
     if index != 0 {
         error!("Invalid XCR index: {}", index);
         return Err(());

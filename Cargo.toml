@@ -29,7 +29,7 @@ run-args = [
   "-display",
   "none",
   "-m",
-  "256M",
+  "4G",
   "-cpu",
   "host",
   "-enable-kvm",

@@ -116,7 +116,12 @@ impl ShadowMsr {
         let msr_kind = vcpu.guest_registers.rcx as u32;
 
         match msr_kind {
-            x86::msr::APIC_BASE => Self::set_ret_val(vcpu, u64::MAX),
+            /*x86::msr::APIC_BASE => {
+                // APIC Base Address with APIC disabled (bit 11 = 0)
+                // Default base address is 0xFEE00000, BSP bit (bit 8) = 1
+                let apic_base = 0xFEE00000 | (1 << 8); // BSP bit set, EN bit cleared
+                Self::set_ret_val(vcpu, apic_base);
+            }*/
             x86::msr::IA32_EFER => Self::set_ret_val(vcpu, unsafe {
                 vmread(vmcs::guest::IA32_EFER_FULL).unwrap()
             }),
@@ -139,6 +144,13 @@ impl ShadowMsr {
         let msr_kind: MsrIndex = regs.rcx as MsrIndex;
 
         match msr_kind {
+            /*x86::msr::APIC_BASE => {
+                // Ignore writes to APIC_BASE MSR - keep APIC disabled
+                // Log attempt if enable bit (bit 11) is set
+                if (value & (1 << 11)) != 0 {
+                    // Guest attempted to enable APIC - ignore
+                }
+            },*/
             x86::msr::IA32_STAR => Self::shadow_write(vcpu, msr_kind),
             x86::msr::IA32_LSTAR => Self::shadow_write(vcpu, msr_kind),
             x86::msr::IA32_CSTAR => Self::shadow_write(vcpu, msr_kind),

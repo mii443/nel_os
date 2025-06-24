@@ -11,7 +11,6 @@ pub fn handle_cpuid_exit(vcpu: &mut VCpu) {
 
     match VmxLeaf::from(regs.rax) {
         VmxLeaf::EXTENDED_ENUMERATION => {
-            info!("CPUID: {:#x}.{:#x}", regs.rax, regs.rcx);
             match regs.rcx {
                 0 => {
                     // EAX: supported XSAVE features (x87=bit0, SSE=bit1)
@@ -383,7 +382,7 @@ impl Default for ExtFeatureEbx0 {
             avx512dq: false,
             rdseed: false,
             adx: false,
-            smap: false,
+            smap: true,
             avx512ifma: false,
             _reserved1: false,
             clflushopt: false,
