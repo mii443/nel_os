@@ -1152,9 +1152,17 @@ impl VCpu {
                                     match instruction_bytes[1] {
                                         0x01 => match instruction_bytes[2] {
                                             0xCA => {
+                                                unsafe {
+                                                    let rflags = vmread(vmcs::guest::RFLAGS).unwrap();
+                                                    vmwrite(vmcs::guest::RFLAGS, rflags & !(1 << 18)).unwrap();
+                                                }
                                                 self.step_next_inst().unwrap();
                                             }
                                             0xCB => {
+                                                unsafe {
+                                                    let rflags = vmread(vmcs::guest::RFLAGS).unwrap();
+                                                    vmwrite(vmcs::guest::RFLAGS, rflags | (1 << 18)).unwrap();
+                                                }
                                                 self.step_next_inst().unwrap();
                                             }
                                             _ => {
