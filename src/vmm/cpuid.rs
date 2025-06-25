@@ -5,11 +5,33 @@ use super::{vcpu::VCpu, vmcs::VmxLeaf};
 
 pub fn handle_cpuid_exit(vcpu: &mut VCpu) {
     let regs = &mut vcpu.guest_registers;
+    info!("CPUID called with EAX={:#x}, ECX={:#x}", regs.rax, regs.rcx);
+
     let vendor: &[u8; 12] = b"miHypervisor";
+    let brand_string: &[u8; 48] = b"Intel(R) Core(TM) i7-8550U CPU @ 1.80GHz       \0";
 
     let vendor = unsafe { core::mem::transmute::<&[u8; 12], &[u32; 3]>(vendor) };
+    let brand_string = unsafe { core::mem::transmute::<&[u8; 48], &[u32; 12]>(brand_string) };
 
     match VmxLeaf::from(regs.rax) {
+        VmxLeaf::EXTENDED_FEATURE_2 => {
+            regs.rax = brand_string[0] as u64;
+            regs.rbx = brand_string[1] as u64;
+            regs.rcx = brand_string[2] as u64;
+            regs.rdx = brand_string[3] as u64;
+        }
+        VmxLeaf::EXTENDED_FEATURE_3 => {
+            regs.rax = brand_string[4] as u64;
+            regs.rbx = brand_string[5] as u64;
+            regs.rcx = brand_string[6] as u64;
+            regs.rdx = brand_string[7] as u64;
+        }
+        VmxLeaf::EXTENDED_FEATURE_4 => {
+            regs.rax = brand_string[8] as u64;
+            regs.rbx = brand_string[9] as u64;
+            regs.rcx = brand_string[10] as u64;
+            regs.rdx = brand_string[11] as u64;
+        }
         VmxLeaf::EXTENDED_ENUMERATION => {
             match regs.rcx {
                 0 => {
@@ -68,7 +90,7 @@ pub fn handle_cpuid_exit(vcpu: &mut VCpu) {
             regs.rdx = signature.edx as u64;
         }
         VmxLeaf::EXTENDED_FUNCTION => {
-            regs.rax = 0x80000000 + 1;
+            regs.rax = 0x80000000 + 4;
             regs.rbx = 0x00000000;
             regs.rcx = 0x00000000;
             regs.rdx = 0x00000000;
