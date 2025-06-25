@@ -26,7 +26,9 @@ use crate::{
     memory::BootInfoFrameAllocator,
     subscribe_with_context,
     vmm::{
-        cpuid, cr, fpu,
+        cpuid, cr,
+        emulation::opcode::emulate_opcode,
+        fpu,
         io::{self, InitPhase, Serial, PIC},
         msr,
         qual::{QualCr, QualIo},
@@ -975,7 +977,7 @@ impl VCpu {
         vmwrite(vmcs::host::RSP, rsp).unwrap();
     }
 
-    fn step_next_inst(&mut self) -> Result<(), VmFail> {
+    pub fn step_next_inst(&mut self) -> Result<(), VmFail> {
         unsafe {
             let rip = vmread(vmcs::guest::RIP)?;
             vmwrite(
@@ -1158,60 +1160,12 @@ impl VCpu {
                     }
 
                     if valid_bytes > 0 {
-                        match instruction_bytes[0] {
-                            0x0F => {
-                                if valid_bytes > 1 {
-                                    match instruction_bytes[1] {
-                                        0x01 => match instruction_bytes[2] {
-                                            0xCA => {
-                                                unsafe {
-                                                    let rflags =
-                                                        vmread(vmcs::guest::RFLAGS).unwrap();
-                                                    vmwrite(
-                                                        vmcs::guest::RFLAGS,
-                                                        rflags & !(1 << 18),
-                                                    )
-                                                    .unwrap();
-                                                }
-                                                self.step_next_inst().unwrap();
-                                            }
-                                            0xCB => {
-                                                unsafe {
-                                                    let rflags =
-                                                        vmread(vmcs::guest::RFLAGS).unwrap();
-                                                    vmwrite(
-                                                        vmcs::guest::RFLAGS,
-                                                        rflags | (1 << 18),
-                                                    )
-                                                    .unwrap();
-                                                }
-                                                self.step_next_inst().unwrap();
-                                            }
-                                            _ => {
-                                                info!(
-                            "VMExit: Exception {} at RIP {:#x} with instruction bytes: {:?}",
-                            vector, rip, &instruction_bytes
-                        );
-                                                self.inject_exception(vector, error_code).unwrap();
-                                            }
-                                        },
-                                        _ => {
-                                            info!(
-                            "VMExit: Exception {} at RIP {:#x} with instruction bytes: {:?}",
-                            vector, rip, &instruction_bytes
-                        );
-                                            self.inject_exception(vector, error_code).unwrap();
-                                        }
-                                    }
-                                }
-                            }
-                            _ => {
-                                info!(
-                            "VMExit: Exception {} at RIP {:#x} with instruction bytes: {:?}",
-                            vector, rip, &instruction_bytes
-                        );
-                                self.inject_exception(vector, error_code).unwrap();
-                            }
+                        if !emulate_opcode(self, instruction_bytes, valid_bytes) {
+                            info!(
+                                "VMExit: Exception {} at RIP {:#x} with instruction bytes: {:?}",
+                                vector, rip, instruction_bytes
+                            );
+                            self.inject_exception(vector, error_code).unwrap();
                         }
                     }
                 }

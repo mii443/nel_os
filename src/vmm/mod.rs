@@ -1,6 +1,7 @@
 pub mod asm;
 pub mod cpuid;
 pub mod cr;
+pub mod emulation;
 pub mod ept;
 pub mod error;
 pub mod fpu;
