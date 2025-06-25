@@ -5,10 +5,9 @@ use super::{vcpu::VCpu, vmcs::VmxLeaf};
 
 pub fn handle_cpuid_exit(vcpu: &mut VCpu) {
     let regs = &mut vcpu.guest_registers;
-    info!("CPUID called with EAX={:#x}, ECX={:#x}", regs.rax, regs.rcx);
 
     let vendor: &[u8; 12] = b"miHypervisor";
-    let brand_string: &[u8; 48] = b"Intel(R) Core(TM) i7-8550U CPU @ 1.80GHz       \0";
+    let brand_string: &[u8; 48] = b"mii Hypervisor CPU on Intel VT-x               \0";
 
     let vendor = unsafe { core::mem::transmute::<&[u8; 12], &[u32; 3]>(vendor) };
     let brand_string = unsafe { core::mem::transmute::<&[u8; 48], &[u32; 12]>(brand_string) };

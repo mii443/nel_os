@@ -656,6 +656,9 @@ impl VmxLeaf {
             0xD => VmxLeaf::EXTENDED_ENUMERATION,
             0x80000000 => VmxLeaf::EXTENDED_FUNCTION,
             0x80000001 => VmxLeaf::EXTENDED_PROCESSOR_SIGNATURE,
+            0x80000002 => VmxLeaf::EXTENDED_FEATURE_2,
+            0x80000003 => VmxLeaf::EXTENDED_FEATURE_3,
+            0x80000004 => VmxLeaf::EXTENDED_FEATURE_4,
             _ => VmxLeaf::UNKNOWN,
         }
     }
