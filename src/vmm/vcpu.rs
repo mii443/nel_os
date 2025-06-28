@@ -26,7 +26,9 @@ use crate::{
     memory::BootInfoFrameAllocator,
     subscribe_with_context,
     vmm::{
-        cpuid, cr, fpu,
+        cpuid, cr,
+        emulation::opcode::{emulate_opcode, OpcodeEmulator},
+        fpu,
         io::{self, InitPhase, Serial, PIC},
         msr,
         qual::{QualCr, QualIo},
@@ -49,8 +51,10 @@ use super::{
 };
 
 const SIZE_2MIB: u64 = 2 * 1024 * 1024;
+const GUEST_MEMORY_SIZE: u64 = 2 * 1024 * 1024 * 1024;
 
-static EPT_FRAME_ALLOCATOR: AtomicPtr<BootInfoFrameAllocator> = AtomicPtr::new(core::ptr::null_mut());
+static EPT_FRAME_ALLOCATOR: AtomicPtr<BootInfoFrameAllocator> =
+    AtomicPtr::new(core::ptr::null_mut());
 
 #[repr(C)]
 pub struct VCpu {
@@ -71,6 +75,8 @@ pub struct VCpu {
     pub io_bitmap_b: x86_64::structures::paging::PhysFrame,
     pub pic: PIC,
     pub pending_irq: u16,
+    pub opcode_emulator: OpcodeEmulator,
+    pub emulate_amd: bool,
 }
 
 const TEMP_STACK_SIZE: usize = 4096;
@@ -184,6 +190,8 @@ impl VCpu {
             io_bitmap_b,
             pic: PIC::new(),
             pending_irq: 0,
+            opcode_emulator: OpcodeEmulator::new(),
+            emulate_amd: false,
         }
     }
 
@@ -193,7 +201,7 @@ impl VCpu {
         mapper: &OffsetPageTable<'static>,
     ) {
         EPT_FRAME_ALLOCATOR.store(frame_allocator as *mut _, Ordering::Release);
-        
+
         self.vmxon.activate_vmxon().unwrap();
 
         let revision_id = unsafe { rdmsr(x86::msr::IA32_VMX_BASIC) } as u32;
@@ -241,7 +249,7 @@ impl VCpu {
 
         let cmdline_start = linux::LAYOUT_CMDLINE as u64;
         let cmdline_end = cmdline_start + cmdline_max_size as u64;
-        
+
         let cmdline_bytes = b"console=ttyS0 earlyprintk=serial nokaslr\0";
         self.load_image(cmdline_bytes, cmdline_start as usize);
 
@@ -272,21 +280,23 @@ impl VCpu {
 
     pub fn load_image(&mut self, image: &[u8], addr: usize) {
         info!("Loading image at {:#x}, size: {} bytes", addr, image.len());
-        
+
         let start_page = addr & !0xFFF;
         let end_page = ((addr + image.len() - 1) & !0xFFF) + 0x1000;
-        
+
         unsafe {
             let frame_allocator_ptr = EPT_FRAME_ALLOCATOR.load(Ordering::Acquire);
             if !frame_allocator_ptr.is_null() {
                 let frame_allocator = &mut *(frame_allocator_ptr as *mut BootInfoFrameAllocator);
-                
+
                 let mut current_page = start_page;
                 while current_page < end_page {
                     if self.ept.get_phys_addr(current_page as u64).is_none() {
                         if let Some(frame) = frame_allocator.allocate_frame() {
                             let hpa = frame.start_address().as_u64();
-                            self.ept.map_4k(current_page as u64, hpa, frame_allocator).unwrap();
+                            self.ept
+                                .map_4k(current_page as u64, hpa, frame_allocator)
+                                .unwrap();
                         } else {
                             panic!("Failed to allocate frame for image at {:#x}", current_page);
                         }
@@ -295,7 +305,7 @@ impl VCpu {
                 }
             }
         }
-        
+
         for (i, &byte) in image.iter().enumerate() {
             let gpa = addr + i;
             self.ept.set(gpa as u64, byte).unwrap();
@@ -303,17 +313,17 @@ impl VCpu {
     }
 
     pub fn setup_guest_memory(&mut self, frame_allocator: &mut BootInfoFrameAllocator) -> u64 {
-        let guest_memory_size = 2 * 1024 * 1024 * 1024;
+        info!(
+            "Setting up guest memory with on-demand allocation (reported size: {}MB)",
+            GUEST_MEMORY_SIZE / (1024 * 1024)
+        );
 
-        info!("Setting up guest memory with on-demand allocation (reported size: {}MB)", 
-              guest_memory_size / (1024 * 1024));
-
-        self.load_kernel(linux::BZIMAGE, guest_memory_size);
+        self.load_kernel(linux::BZIMAGE, GUEST_MEMORY_SIZE);
 
         let eptp = EPTP::new(&self.ept.root_table);
         unsafe { vmwrite(vmcs::control::EPTP_FULL, eptp.0).unwrap() };
 
-        guest_memory_size
+        GUEST_MEMORY_SIZE
     }
 
     pub fn register_msrs(&mut self, mapper: &OffsetPageTable<'static>) {
@@ -354,6 +364,7 @@ impl VCpu {
                 .set(x86::msr::MSR_C5_PMON_BOX_CTRL, 0)
                 .unwrap();
             self.guest_msr.set(0x1b, 0).unwrap();
+            self.guest_msr.set(0xc0010007, 0).unwrap();
 
             vmwrite(
                 vmcs::control::VMEXIT_MSR_LOAD_ADDR_FULL,
@@ -969,7 +980,7 @@ impl VCpu {
         vmwrite(vmcs::host::RSP, rsp).unwrap();
     }
 
-    fn step_next_inst(&mut self) -> Result<(), VmFail> {
+    pub fn step_next_inst(&mut self) -> Result<(), VmFail> {
         unsafe {
             let rip = vmread(vmcs::guest::RIP)?;
             vmwrite(
@@ -980,8 +991,11 @@ impl VCpu {
     }
 
     fn handle_ept_violation(&mut self, gpa: u64) {
-        if gpa >= 2 * 1024 * 1024 * 1024 {
-            panic!("EPT Violation: Guest tried to access memory beyond 2GB at {:#x}", gpa);
+        if gpa >= GUEST_MEMORY_SIZE {
+            panic!(
+                "EPT Violation: Guest tried to access memory beyond 2GB at {:#x}",
+                gpa
+            );
         }
 
         unsafe {
@@ -989,19 +1003,22 @@ impl VCpu {
             if frame_allocator_ptr.is_null() {
                 panic!("EPT Violation: Frame allocator not initialized!");
             }
-            
+
             let frame_allocator = &mut *(frame_allocator_ptr as *mut BootInfoFrameAllocator);
-            
+
             match frame_allocator.allocate_frame() {
                 Some(frame) => {
                     let hpa = frame.start_address().as_u64();
-                    
+
                     if let Err(e) = self.ept.map_4k(gpa, hpa, frame_allocator) {
                         panic!("Failed to map page at GPA {:#x}: {}", gpa, e);
                     }
                 }
                 None => {
-                    panic!("EPT Violation: Out of memory! Cannot allocate frame for GPA {:#x}", gpa);
+                    panic!(
+                        "EPT Violation: Out of memory! Cannot allocate frame for GPA {:#x}",
+                        gpa
+                    );
                 }
             }
         }
@@ -1146,38 +1163,12 @@ impl VCpu {
                     }
 
                     if valid_bytes > 0 {
-                        match instruction_bytes[0] {
-                            0x0F => {
-                                if valid_bytes > 1 {
-                                    match instruction_bytes[1] {
-                                        0x01 => match instruction_bytes[2] {
-                                            0xCA => {
-                                                unsafe {
-                                                    let rflags = vmread(vmcs::guest::RFLAGS).unwrap();
-                                                    vmwrite(vmcs::guest::RFLAGS, rflags & !(1 << 18)).unwrap();
-                                                }
-                                                self.step_next_inst().unwrap();
-                                            }
-                                            0xCB => {
-                                                unsafe {
-                                                    let rflags = vmread(vmcs::guest::RFLAGS).unwrap();
-                                                    vmwrite(vmcs::guest::RFLAGS, rflags | (1 << 18)).unwrap();
-                                                }
-                                                self.step_next_inst().unwrap();
-                                            }
-                                            _ => {
-                                                self.inject_exception(vector, error_code).unwrap();
-                                            }
-                                        },
-                                        _ => {
-                                            self.inject_exception(vector, error_code).unwrap();
-                                        }
-                                    }
-                                }
-                            }
-                            _ => {
-                                self.inject_exception(vector, error_code).unwrap();
-                            }
+                        if !emulate_opcode(self, instruction_bytes, valid_bytes) {
+                            info!(
+                                "VMExit: Exception {} at RIP {:#x} with instruction bytes: {:?}",
+                                vector, rip, instruction_bytes
+                            );
+                            self.inject_exception(vector, error_code).unwrap();
                         }
                     }
                 }
@@ -1215,7 +1206,7 @@ impl VCpu {
                     let translation_valid = (exit_qualification & 0x100) != 0;
 
                     let page_addr = guest_address & !0xFFF;
-                    
+
                     self.handle_ept_violation(page_addr);
                 }
                 _ => {
