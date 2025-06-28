@@ -6,7 +6,12 @@ use super::{vcpu::VCpu, vmcs::VmxLeaf};
 pub fn handle_cpuid_exit(vcpu: &mut VCpu) {
     let regs = &mut vcpu.guest_registers;
 
-    let vendor: &[u8; 12] = b"AuthenticAMD";
+    let vendor: &[u8; 12] = if vcpu.emulate_amd {
+        b"AuthenticAMD"
+    } else {
+        b"miHypervisor"
+    };
+
     let brand_string: &[u8; 48] = b"mii Hypervisor CPU on Intel VT-x               \0";
 
     let vendor = unsafe { core::mem::transmute::<&[u8; 12], &[u32; 3]>(vendor) };

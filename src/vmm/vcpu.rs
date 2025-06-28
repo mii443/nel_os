@@ -27,7 +27,7 @@ use crate::{
     subscribe_with_context,
     vmm::{
         cpuid, cr,
-        emulation::opcode::emulate_opcode,
+        emulation::opcode::{emulate_opcode, OpcodeEmulator},
         fpu,
         io::{self, InitPhase, Serial, PIC},
         msr,
@@ -51,6 +51,7 @@ use super::{
 };
 
 const SIZE_2MIB: u64 = 2 * 1024 * 1024;
+const GUEST_MEMORY_SIZE: u64 = 2 * 1024 * 1024 * 1024;
 
 static EPT_FRAME_ALLOCATOR: AtomicPtr<BootInfoFrameAllocator> =
     AtomicPtr::new(core::ptr::null_mut());
@@ -74,6 +75,8 @@ pub struct VCpu {
     pub io_bitmap_b: x86_64::structures::paging::PhysFrame,
     pub pic: PIC,
     pub pending_irq: u16,
+    pub opcode_emulator: OpcodeEmulator,
+    pub emulate_amd: bool,
 }
 
 const TEMP_STACK_SIZE: usize = 4096;
@@ -187,6 +190,8 @@ impl VCpu {
             io_bitmap_b,
             pic: PIC::new(),
             pending_irq: 0,
+            opcode_emulator: OpcodeEmulator::new(),
+            emulate_amd: false,
         }
     }
 
@@ -308,19 +313,17 @@ impl VCpu {
     }
 
     pub fn setup_guest_memory(&mut self, frame_allocator: &mut BootInfoFrameAllocator) -> u64 {
-        let guest_memory_size = 2 * 1024 * 1024 * 1024;
-
         info!(
             "Setting up guest memory with on-demand allocation (reported size: {}MB)",
-            guest_memory_size / (1024 * 1024)
+            GUEST_MEMORY_SIZE / (1024 * 1024)
         );
 
-        self.load_kernel(linux::BZIMAGE, guest_memory_size);
+        self.load_kernel(linux::BZIMAGE, GUEST_MEMORY_SIZE);
 
         let eptp = EPTP::new(&self.ept.root_table);
         unsafe { vmwrite(vmcs::control::EPTP_FULL, eptp.0).unwrap() };
 
-        guest_memory_size
+        GUEST_MEMORY_SIZE
     }
 
     pub fn register_msrs(&mut self, mapper: &OffsetPageTable<'static>) {
@@ -988,7 +991,7 @@ impl VCpu {
     }
 
     fn handle_ept_violation(&mut self, gpa: u64) {
-        if gpa >= 2 * 1024 * 1024 * 1024 {
+        if gpa >= GUEST_MEMORY_SIZE {
             panic!(
                 "EPT Violation: Guest tried to access memory beyond 2GB at {:#x}",
                 gpa

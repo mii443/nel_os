@@ -16,6 +16,20 @@ const OPCODE_SYSCALL: u8 = 0x05;
 
 const RFLAGS_AC_BIT: u64 = 1 << 18;
 
+pub struct OpcodeEmulator {
+    pub original_opcode: Option<[u8; 16]>,
+    pub replaced_address: Option<u64>,
+}
+
+impl OpcodeEmulator {
+    pub fn new() -> Self {
+        OpcodeEmulator {
+            original_opcode: None,
+            replaced_address: None,
+        }
+    }
+}
+
 pub fn emulate_opcode(vcpu: &mut VCpu, instruction_bytes: [u8; 16], valid_bytes: u64) -> bool {
     if instruction_bytes[0] != OPCODE_TWO_BYTE_ESCAPE || valid_bytes < 2 {
         return false;
@@ -36,6 +50,10 @@ pub fn emulate_opcode(vcpu: &mut VCpu, instruction_bytes: [u8; 16], valid_bytes:
 }
 
 fn emulate_syscall(vcpu: &mut VCpu) -> bool {
+    if !vcpu.emulate_amd {
+        return false;
+    }
+
     let current_rip = unsafe { vmread(vmcs::guest::RIP).unwrap() };
     let return_address = current_rip + 2;
 
