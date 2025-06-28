@@ -56,6 +56,16 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
         panic!("VMX not supported");
     }
 
+    let devices = nel_os::pci::scan_devices();
+    info!("PCI devices found: {}", devices.len());
+
+    for device in &devices {
+        info!(
+            "    Device: {:x}:{:x} ({})",
+            device.vendor_id, device.device_id, device.class
+        );
+    }
+
     let mut vcpu = VCpu::new(phys_mem_offset.as_u64(), &mut frame_allocator);
     vcpu.activate(&mut frame_allocator, &mapper);
 
