@@ -5,6 +5,7 @@ pub mod emulation;
 pub mod ept;
 pub mod error;
 pub mod fpu;
+pub mod invlpg;
 pub mod io;
 pub mod linux;
 pub mod msr;

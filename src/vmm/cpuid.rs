@@ -12,7 +12,11 @@ pub fn handle_cpuid_exit(vcpu: &mut VCpu) {
         b"miHypervisor"
     };
 
-    let brand_string: &[u8; 48] = b"mii Hypervisor CPU on Intel VT-x               \0";
+    let brand_string: &[u8; 48] = if vcpu.emulate_amd {
+        b"AMD EPYC 9965 192-Core Processor               \0"
+    } else {
+        b"mii Hypervisor CPU on Intel VT-x               \0"
+    };
 
     let vendor = unsafe { core::mem::transmute::<&[u8; 12], &[u32; 3]>(vendor) };
     let brand_string = unsafe { core::mem::transmute::<&[u8; 48], &[u32; 12]>(brand_string) };

@@ -1017,6 +1017,12 @@ impl VCpu {
                     if let Err(e) = self.ept.map_4k(gpa, hpa, frame_allocator) {
                         panic!("Failed to map page at GPA {:#x}: {}", gpa, e);
                     }
+                    
+                    // Invalidate EPT after mapping new page
+                    // Note: INVEPT might not be available on all processors
+                    use crate::vmm::invlpg::invept_single_context;
+                    let eptp = vmread(vmcs::control::EPTP_FULL).unwrap();
+                    let _ = invept_single_context(eptp); // Ignore errors as INVEPT might not be supported
                 }
                 None => {
                     panic!(
@@ -1054,6 +1060,48 @@ impl VCpu {
             match reason {
                 33 => {
                     info!("    Reason: VM-entry failure due to invalid guest state");
+                    // Read VM-instruction error for more details
+                    let vm_instruction_error = unsafe { 
+                        use x86::msr::rdmsr;
+                        vmread(vmcs::ro::VM_INSTRUCTION_ERROR).unwrap_or(0)
+                    };
+                    info!("    VM-instruction error: {}", vm_instruction_error);
+                    
+                    // Dump guest state for debugging
+                    unsafe {
+                        info!("    Guest state dump:");
+                        info!("      CS: selector={:#x}, base={:#x}, limit={:#x}, rights={:#x}",
+                              vmread(vmcs::guest::CS_SELECTOR).unwrap(),
+                              vmread(vmcs::guest::CS_BASE).unwrap(),
+                              vmread(vmcs::guest::CS_LIMIT).unwrap(),
+                              vmread(vmcs::guest::CS_ACCESS_RIGHTS).unwrap());
+                        info!("      SS: selector={:#x}, base={:#x}, limit={:#x}, rights={:#x}",
+                              vmread(vmcs::guest::SS_SELECTOR).unwrap(),
+                              vmread(vmcs::guest::SS_BASE).unwrap(),
+                              vmread(vmcs::guest::SS_LIMIT).unwrap(),
+                              vmread(vmcs::guest::SS_ACCESS_RIGHTS).unwrap());
+                        info!("      DS: selector={:#x}, base={:#x}, limit={:#x}, rights={:#x}",
+                              vmread(vmcs::guest::DS_SELECTOR).unwrap(),
+                              vmread(vmcs::guest::DS_BASE).unwrap(),
+                              vmread(vmcs::guest::DS_LIMIT).unwrap(),
+                              vmread(vmcs::guest::DS_ACCESS_RIGHTS).unwrap());
+                        info!("      ES: selector={:#x}, base={:#x}, limit={:#x}, rights={:#x}",
+                              vmread(vmcs::guest::ES_SELECTOR).unwrap(),
+                              vmread(vmcs::guest::ES_BASE).unwrap(),
+                              vmread(vmcs::guest::ES_LIMIT).unwrap(),
+                              vmread(vmcs::guest::ES_ACCESS_RIGHTS).unwrap());
+                        info!("      RIP={:#x}, RSP={:#x}, RFLAGS={:#x}",
+                              vmread(vmcs::guest::RIP).unwrap(),
+                              vmread(vmcs::guest::RSP).unwrap(),
+                              vmread(vmcs::guest::RFLAGS).unwrap());
+                        info!("      CR0={:#x}, CR3={:#x}, CR4={:#x}",
+                              vmread(vmcs::guest::CR0).unwrap(),
+                              vmread(vmcs::guest::CR3).unwrap(),
+                              vmread(vmcs::guest::CR4).unwrap());
+                        info!("      EFER={:#x}",
+                              vmread(vmcs::guest::IA32_EFER_FULL).unwrap());
+                    }
+                    panic!("VM-entry failure due to invalid guest state");
                 }
                 34 => {
                     info!("    Reason: VM-entry failure due to MSR loading");

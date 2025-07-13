@@ -1,6 +1,7 @@
 use crate::{
     info,
     vmm::{
+        invlpg::{invept_single_context, invvpid_individual_address},
         vcpu::VCpu,
         vmcs::{DescriptorType, EntryControls, Granularity, SegmentRights},
     },
@@ -72,13 +73,9 @@ pub fn emulate_opcode(vcpu: &mut VCpu, instruction_bytes: [u8; 16], valid_bytes:
 pub fn handle_vmcall(vcpu: &mut VCpu, guest_phys_addr: u64) -> bool {
     if let Some(replaced_addr) = vcpu.opcode_emulator.replaced_address {
         if replaced_addr == guest_phys_addr {
-            info!("Handling VMCall at {:#x}", guest_phys_addr);
-
             match vcpu.opcode_emulator.vmcall_control {
                 Some(VmcallControl::ReturnTo32Bit) => {
-                    if return_to_32_bit(vcpu) {
-                        info!("Successfully returned to 32-bit mode.");
-                    } else {
+                    if !return_to_32_bit(vcpu) {
                         info!("Failed to return to 32-bit mode.");
                     }
                 }
@@ -87,9 +84,7 @@ pub fn handle_vmcall(vcpu: &mut VCpu, guest_phys_addr: u64) -> bool {
                 }
             }
 
-            if restore_replaced_opcode(vcpu) {
-                info!("VMCall handled successfully, original opcode restored.");
-            } else {
+            if !restore_replaced_opcode(vcpu) {
                 info!("Failed to restore original opcode.");
             }
             // Clear saved selectors after handling
@@ -124,10 +119,24 @@ fn restore_replaced_opcode(vcpu: &mut VCpu) -> bool {
             }
             vcpu.opcode_emulator.original_opcode = None;
             vcpu.opcode_emulator.replaced_address = None;
-            info!(
-                "Restoring original opcode at {:#x}: {:?}",
-                guest_phys_addr, original_opcode
-            );
+
+            // Invalidate TLB and EPT after modifying code
+            unsafe {
+                // Get EPTP for EPT invalidation
+                let eptp = vmread(vmcs::control::EPTP_FULL).unwrap();
+                let _ = invept_single_context(eptp); // Ignore errors
+
+                // Get VPID for TLB invalidation (if VPID is enabled)
+                let secondary_controls =
+                    vmread(vmcs::control::SECONDARY_PROCBASED_EXEC_CONTROLS).unwrap();
+                if secondary_controls & (1 << 5) != 0 {
+                    // VPID enabled
+                    let vpid = vmread(vmcs::control::VPID).unwrap() as u16;
+                    let rip = vmread(vmcs::guest::RIP).unwrap();
+                    let _ = invvpid_individual_address(vpid, rip); // Ignore errors
+                }
+            }
+
             return true;
         }
     }
@@ -153,17 +162,25 @@ fn replace_opcode(vcpu: &mut VCpu, instruction_bytes: [u8; 16], replace: &[u8]) 
         vcpu.ept.set(guest_phys_addr + i as u64, byte).unwrap();
     }
 
-    info!(
-        "Replacing opcode with: {:?} at {:#x}",
-        replace, guest_phys_addr
-    );
+    // Invalidate TLB and EPT after modifying code
+    unsafe {
+        // Get EPTP for EPT invalidation
+        let eptp = vmread(vmcs::control::EPTP_FULL).unwrap();
+        let _ = invept_single_context(eptp); // Ignore errors
+
+        // Get VPID for TLB invalidation (if VPID is enabled)
+        let secondary_controls = vmread(vmcs::control::SECONDARY_PROCBASED_EXEC_CONTROLS).unwrap();
+        if secondary_controls & (1 << 5) != 0 {
+            // VPID enabled
+            let vpid = vmread(vmcs::control::VPID).unwrap() as u16;
+            let _ = invvpid_individual_address(vpid, rip); // Ignore errors
+        }
+    }
 
     true
 }
 
 fn return_to_32_bit(vcpu: &mut VCpu) -> bool {
-    // 32bitモードへ戻す処理
-    info!("Returning to 32-bit mode");
     if !vcpu.emulate_amd {
         return false;
     }
@@ -229,9 +246,9 @@ fn return_to_32_bit(vcpu: &mut VCpu) -> bool {
         };
         vmwrite(vmcs::guest::SS_ACCESS_RIGHTS, ss_rights.0 as u64).unwrap();
 
-        // Set 32-bit data segment selectors
-        vmwrite(vmcs::guest::DS_SELECTOR, 0).unwrap();
-        vmwrite(vmcs::guest::ES_SELECTOR, 0).unwrap();
+        // Set 32-bit data segment selectors - use same as SS for compatibility mode
+        vmwrite(vmcs::guest::DS_SELECTOR, user_ss_selector as u64).unwrap();
+        vmwrite(vmcs::guest::ES_SELECTOR, user_ss_selector as u64).unwrap();
         vmwrite(vmcs::guest::FS_SELECTOR, 0).unwrap();
 
         // Restore GS selector and base
@@ -249,16 +266,16 @@ fn return_to_32_bit(vcpu: &mut VCpu) -> bool {
         vmwrite(vmcs::guest::ES_BASE, 0).unwrap();
         vmwrite(vmcs::guest::FS_BASE, 0).unwrap();
 
-        // Set segment limits
-        vmwrite(vmcs::guest::DS_LIMIT, 0).unwrap();
-        vmwrite(vmcs::guest::ES_LIMIT, 0).unwrap();
+        // Set segment limits - 32-bit segments need proper limits
+        vmwrite(vmcs::guest::DS_LIMIT, 0xFFFFFFFF).unwrap();
+        vmwrite(vmcs::guest::ES_LIMIT, 0xFFFFFFFF).unwrap();
         vmwrite(vmcs::guest::FS_LIMIT, 0).unwrap();
         vmwrite(vmcs::guest::GS_LIMIT, 0xFFFFFFFF).unwrap();
 
-        // Set segment access rights for null segments (unusable)
+        // Set segment access rights for data segments (same as SS)
+        vmwrite(vmcs::guest::DS_ACCESS_RIGHTS, ss_rights.0 as u64).unwrap();
+        vmwrite(vmcs::guest::ES_ACCESS_RIGHTS, ss_rights.0 as u64).unwrap();
         let null_rights = 0x10000; // Unusable bit set
-        vmwrite(vmcs::guest::DS_ACCESS_RIGHTS, null_rights).unwrap();
-        vmwrite(vmcs::guest::ES_ACCESS_RIGHTS, null_rights).unwrap();
         vmwrite(vmcs::guest::FS_ACCESS_RIGHTS, null_rights).unwrap();
 
         // Set GS access rights for 32-bit data segment
@@ -278,16 +295,6 @@ fn return_to_32_bit(vcpu: &mut VCpu) -> bool {
         };
         vmwrite(vmcs::guest::GS_ACCESS_RIGHTS, gs_rights).unwrap();
 
-        info!("Restoring user mode segments:");
-        info!("  CS: selector={:#x} -> {:#x}, base={:#x} -> {:#x}, limit={:#x} -> {:#x}, rights={:#x} -> {:#x}", 
-              current_cs_val, user_cs_selector, current_cs_base, 0, current_cs_limit, 0xFFFFFFFFu64, current_cs_rights, cs_rights.0);
-        info!("  SS: selector={:#x} -> {:#x}, base={:#x} -> {:#x}, limit={:#x} -> {:#x}, rights={:#x} -> {:#x}", 
-              current_ss_val, user_ss_selector, current_ss_base, 0, current_ss_limit, 0xFFFFFFFFu64, current_ss_rights, ss_rights.0);
-        info!(
-            "  GS: selector={:#x} -> {:#x}, base={:#x} -> {:#x}",
-            current_gs_val, gs_selector, current_gs_base, gs_base
-        );
-
         // Ensure CR0, CR4, and EFER are properly set for compatibility mode
         let mut cr0 = vmread(vmcs::guest::CR0).unwrap();
         cr0 |= (1 << 31) | (1 << 0); // PG and PE bits
@@ -305,28 +312,12 @@ fn return_to_32_bit(vcpu: &mut VCpu) -> bool {
         // Only the CS.L bit determines if we're in compatibility mode
 
         // Log guest registers that might be important
-        info!(
-            "Restored to user mode: RIP={:#x}, RFLAGS={:#x}, CS={:#x}, SS={:#x}, GS={:#x}, GS_BASE={:#x}",
-            return_rip + 2,
-            return_rflags,
-            user_cs_selector,
-            user_ss_selector,
-            gs_selector,
-            gs_base
-        );
-        info!("Guest registers: RAX={:#x}, RCX={:#x}, RDX={:#x}, RSI={:#x}, RDI={:#x}", 
-              vcpu.guest_registers.rax,
-              vcpu.guest_registers.rcx,
-              vcpu.guest_registers.rdx,
-              vcpu.guest_registers.rsi,
-              vcpu.guest_registers.rdi);
     }
 
     true
 }
 
 fn emulate_syscall(vcpu: &mut VCpu, instruction_bytes: [u8; 16]) -> bool {
-    info!("Emulating SYSCALL instruction");
     if !vcpu.emulate_amd {
         return false;
     }
@@ -354,20 +345,6 @@ fn emulate_syscall(vcpu: &mut VCpu, instruction_bytes: [u8; 16]) -> bool {
     let current_ss_rights = unsafe { vmread(vmcs::guest::SS_ACCESS_RIGHTS).unwrap() };
     let current_gs_limit = unsafe { vmread(vmcs::guest::GS_LIMIT).unwrap() };
     let current_gs_rights = unsafe { vmread(vmcs::guest::GS_ACCESS_RIGHTS).unwrap() };
-
-    info!("Current segments before SYSCALL:");
-    info!(
-        "  CS: selector={:#x}, base={:#x}, limit={:#x}, rights={:#x}",
-        current_cs, current_cs_base, current_cs_limit, current_cs_rights
-    );
-    info!(
-        "  SS: selector={:#x}, base={:#x}, limit={:#x}, rights={:#x}",
-        current_ss, current_ss_base, current_ss_limit, current_ss_rights
-    );
-    info!(
-        "  GS: selector={:#x}, base={:#x}, limit={:#x}, rights={:#x}",
-        current_gs, current_gs_base, current_gs_limit, current_gs_rights
-    );
 
     vcpu.opcode_emulator.saved_cs_selector = Some(current_cs);
     vcpu.opcode_emulator.saved_ss_selector = Some(current_ss);
@@ -406,17 +383,6 @@ fn emulate_syscall(vcpu: &mut VCpu, instruction_bytes: [u8; 16]) -> bool {
         rights.set_db(true);
         rights
     };
-
-    info!("Setting RIP:{:x} to {:x}", current_rip, lstar);
-    info!("Setting kernel segments for SYSCALL:");
-    info!(
-        "  CS: selector={:#x} -> {:#x}, base=0 -> 0, limit={:#x} -> {:#x}, rights={:#x} -> {:#x}",
-        current_cs, cs_selector, current_cs_limit, 0xFFFFFFFFu64, current_cs_rights, cs_rights.0
-    );
-    info!(
-        "  SS: selector={:#x} -> {:#x}, base=0 -> 0, limit={:#x} -> {:#x}, rights={:#x} -> {:#x}",
-        current_ss, ss_selector, current_ss_limit, 0xFFFFFFFFu64, current_ss_rights, ss_rights.0
-    );
 
     unsafe {
         // Set segment registers for kernel mode
