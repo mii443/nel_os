@@ -56,7 +56,7 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
         panic!("VMX not supported");
     }
 
-    let mut vcpu = VCpu::new(phys_mem_offset.as_u64(), &mut frame_allocator);
+    let mut vcpu = VCpu::new(phys_mem_offset.as_u64(), &mut frame_allocator, true);
     vcpu.activate(&mut frame_allocator, &mapper);
 
     #[cfg(not(test))]

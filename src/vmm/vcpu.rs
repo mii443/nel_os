@@ -27,7 +27,7 @@ use crate::{
     subscribe_with_context,
     vmm::{
         cpuid, cr,
-        emulation::opcode::{emulate_opcode, OpcodeEmulator},
+        emulation::opcode::{emulate_opcode, handle_vmcall, OpcodeEmulator},
         fpu,
         io::{self, InitPhase, Serial, PIC},
         msr,
@@ -83,7 +83,7 @@ const TEMP_STACK_SIZE: usize = 4096;
 static mut TEMP_STACK: [u8; TEMP_STACK_SIZE + 0x10] = [0; TEMP_STACK_SIZE + 0x10];
 
 impl VCpu {
-    fn translate_guest_address(&mut self, vaddr: u64) -> Result<u64, &'static str> {
+    pub fn translate_guest_address(&mut self, vaddr: u64) -> Result<u64, &'static str> {
         // Read guest CR3
         let cr3 = unsafe { vmread(vmcs::guest::CR3).map_err(|_| "Failed to read guest CR3")? };
         let pml4_base = cr3 & !0xFFF; // Clear lower 12 bits to get page table base
@@ -148,7 +148,7 @@ impl VCpu {
         Ok(page_base | page_offset)
     }
 
-    fn read_guest_phys_u64(&mut self, gpa: u64) -> Result<u64, &'static str> {
+    pub fn read_guest_phys_u64(&mut self, gpa: u64) -> Result<u64, &'static str> {
         let mut result_bytes = [0u8; 8];
 
         for i in 0..8 {
@@ -161,7 +161,11 @@ impl VCpu {
         Ok(u64::from_le_bytes(result_bytes))
     }
 
-    pub fn new(phys_mem_offset: u64, frame_allocator: &mut BootInfoFrameAllocator) -> Self {
+    pub fn new(
+        phys_mem_offset: u64,
+        frame_allocator: &mut BootInfoFrameAllocator,
+        emulate_amd: bool,
+    ) -> Self {
         let mut vmxon = Vmxon::new(frame_allocator);
         vmxon.init(phys_mem_offset);
         let vmcs = Vmcs::new(frame_allocator);
@@ -191,7 +195,7 @@ impl VCpu {
             pic: PIC::new(),
             pending_irq: 0,
             opcode_emulator: OpcodeEmulator::new(),
-            emulate_amd: false,
+            emulate_amd,
         }
     }
 
@@ -1110,6 +1114,11 @@ impl VCpu {
                     )
                     .unwrap();
                     self.step_next_inst().unwrap();
+                }
+                VmxExitReason::VMCALL => {
+                    let rip = unsafe { vmread(vmcs::guest::RIP).unwrap() };
+                    let gpa = self.translate_guest_address(rip).unwrap_or(rip);
+                    handle_vmcall(self, gpa);
                 }
                 VmxExitReason::EXCEPTION => {
                     // Get exception information
