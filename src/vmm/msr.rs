@@ -7,6 +7,8 @@ use x86::vmx::vmcs;
 use x86_64::structures::paging::{OffsetPageTable, Translate};
 use x86_64::{PhysAddr, VirtAddr};
 
+use crate::info;
+
 use super::vcpu::VCpu;
 
 type MsrIndex = u32;
@@ -132,7 +134,7 @@ impl ShadowMsr {
                 // Lock bit (0) | Enable VMX inside SMX (1) | Enable VMX outside SMX (2)
                 Self::set_ret_val(vcpu, 0x5)
             }
-            0x48 => Self::set_ret_val(vcpu, 0), // IA32_SPEC_CTRL
+            0x48 => Self::set_ret_val(vcpu, 0),  // IA32_SPEC_CTRL
             0x122 => Self::set_ret_val(vcpu, 0), // IA32_TSX_CTRL
             0x560 => Self::set_ret_val(vcpu, 0), // IA32_RTIT_OUTPUT_BASE
             0x561 => Self::set_ret_val(vcpu, 0), // IA32_RTIT_OUTPUT_MASK_PTRS
@@ -158,15 +160,15 @@ impl ShadowMsr {
             x86::msr::IA32_LSTAR => Self::shadow_read(vcpu, msr_kind),
             x86::msr::IA32_CSTAR => Self::shadow_read(vcpu, msr_kind),
             x86::msr::IA32_FMASK => Self::shadow_read(vcpu, msr_kind),
-            x86::msr::SYSENTER_CS_MSR => {
-                Self::set_ret_val(vcpu, unsafe { vmread(vmcs::guest::IA32_SYSENTER_CS).unwrap() })
-            }
-            x86::msr::SYSENTER_ESP_MSR => {
-                Self::set_ret_val(vcpu, unsafe { vmread(vmcs::guest::IA32_SYSENTER_ESP).unwrap() })
-            }
-            x86::msr::SYSENTER_EIP_MSR => {
-                Self::set_ret_val(vcpu, unsafe { vmread(vmcs::guest::IA32_SYSENTER_EIP).unwrap() })
-            }
+            x86::msr::SYSENTER_CS_MSR => Self::set_ret_val(vcpu, unsafe {
+                vmread(vmcs::guest::IA32_SYSENTER_CS).unwrap()
+            }),
+            x86::msr::SYSENTER_ESP_MSR => Self::set_ret_val(vcpu, unsafe {
+                vmread(vmcs::guest::IA32_SYSENTER_ESP).unwrap()
+            }),
+            x86::msr::SYSENTER_EIP_MSR => Self::set_ret_val(vcpu, unsafe {
+                vmread(vmcs::guest::IA32_SYSENTER_EIP).unwrap()
+            }),
             0x1b => Self::shadow_read(vcpu, msr_kind),
             0x8b => Self::set_ret_val(vcpu, 0x8701021),
             0xc0011029 => Self::set_ret_val(vcpu, 0x3000310e08202),
@@ -179,10 +181,10 @@ impl ShadowMsr {
             0xc0010117 => Self::set_ret_val(vcpu, 0), // MSR_VM_HSAVE_PA
             0x277 => Self::set_ret_val(vcpu, 0x0007040600070406),
             0xc0000103 => Self::shadow_read(vcpu, msr_kind), // TSC_AUX
-            0xd90 => Self::set_ret_val(vcpu, 0), // MSR_C1_PMON_EVNT_SEL0
-            0xe1 => Self::set_ret_val(vcpu, 0), // IA32_UMWAIT_CONTROL
-            0x1c4 => Self::set_ret_val(vcpu, 0), // Unknown MSR
-            0x1c5 => Self::set_ret_val(vcpu, 0), // Unknown MSR
+            0xd90 => Self::set_ret_val(vcpu, 0),             // MSR_C1_PMON_EVNT_SEL0
+            0xe1 => Self::set_ret_val(vcpu, 0),              // IA32_UMWAIT_CONTROL
+            0x1c4 => Self::set_ret_val(vcpu, 0),             // Unknown MSR
+            0x1c5 => Self::set_ret_val(vcpu, 0),             // Unknown MSR
             _ => {
                 panic!("Unhandled RDMSR: {:#x}", msr_kind);
             }
@@ -218,11 +220,17 @@ impl ShadowMsr {
             x86::msr::SYSENTER_ESP_MSR => unsafe {
                 vmwrite(vmcs::guest::IA32_SYSENTER_ESP, value).unwrap()
             },
-            x86::msr::IA32_EFER => unsafe { vmwrite(vmcs::guest::IA32_EFER_FULL, value).unwrap() },
+            x86::msr::IA32_EFER => {
+                info!("Setting IA32_EFER: {:#x}", value);
+                if value == 0xd01 || value == 0x100 {
+                    unsafe { vmwrite(vmcs::guest::IA32_EFER_FULL, value).unwrap() }
+                }
+            }
             x86::msr::IA32_FS_BASE => unsafe { vmwrite(vmcs::guest::FS_BASE, value).unwrap() },
             x86::msr::IA32_GS_BASE => unsafe { vmwrite(vmcs::guest::GS_BASE, value).unwrap() },
             0x1b => Self::shadow_write(vcpu, msr_kind),
             0xc0010007 => Self::shadow_write(vcpu, msr_kind),
+            0xc0010117 => Self::shadow_write(vcpu, msr_kind),
 
             _ => {
                 panic!("Unhandled WRMSR: {:#x}", msr_kind);
