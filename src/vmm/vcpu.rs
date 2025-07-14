@@ -50,7 +50,7 @@ use super::{
     vmxon::Vmxon,
 };
 
-const SIZE_2MIB: u64 = 2 * 1024 * 1024;
+const _SIZE_2MIB: u64 = 2 * 1024 * 1024;
 const GUEST_MEMORY_SIZE: u64 = 2 * 1024 * 1024 * 1024;
 
 static EPT_FRAME_ALLOCATOR: AtomicPtr<BootInfoFrameAllocator> =
@@ -252,7 +252,7 @@ impl VCpu {
         };
 
         let cmdline_start = linux::LAYOUT_CMDLINE as u64;
-        let cmdline_end = cmdline_start + cmdline_max_size as u64;
+        let _cmdline_end = cmdline_start + cmdline_max_size as u64;
 
         let cmdline_bytes = b"console=ttyS0 earlyprintk=serial nokaslr\0";
         self.load_image(cmdline_bytes, cmdline_start as usize);
@@ -316,7 +316,7 @@ impl VCpu {
         }
     }
 
-    pub fn setup_guest_memory(&mut self, frame_allocator: &mut BootInfoFrameAllocator) -> u64 {
+    pub fn setup_guest_memory(&mut self, _frame_allocator: &mut BootInfoFrameAllocator) -> u64 {
         info!(
             "Setting up guest memory with on-demand allocation (reported size: {}MB)",
             GUEST_MEMORY_SIZE / (1024 * 1024)
@@ -1062,7 +1062,6 @@ impl VCpu {
                     info!("    Reason: VM-entry failure due to invalid guest state");
                     // Read VM-instruction error for more details
                     let vm_instruction_error = unsafe { 
-                        use x86::msr::rdmsr;
                         vmread(vmcs::ro::VM_INSTRUCTION_ERROR).unwrap_or(0)
                     };
                     info!("    VM-instruction error: {}", vm_instruction_error);
@@ -1203,7 +1202,7 @@ impl VCpu {
                                 }
                             }
                         }
-                        Err(e) => {
+                        Err(_e) => {
                             // Try reading directly as physical address if translation fails
                             if rip < 0x100000000 {
                                 for i in 0..16 {
@@ -1254,13 +1253,13 @@ impl VCpu {
                         unsafe { vmread(vmcs::ro::GUEST_PHYSICAL_ADDR_FULL).unwrap() };
                     let exit_qualification =
                         unsafe { vmread(vmcs::ro::EXIT_QUALIFICATION).unwrap() };
-                    let guest_rip = unsafe { vmread(vmcs::guest::RIP).unwrap() };
+                    let _guest_rip = unsafe { vmread(vmcs::guest::RIP).unwrap() };
 
-                    let read_access = (exit_qualification & 0x1) != 0;
-                    let write_access = (exit_qualification & 0x2) != 0;
-                    let execute_access = (exit_qualification & 0x4) != 0;
-                    let gpa_valid = (exit_qualification & 0x80) != 0;
-                    let translation_valid = (exit_qualification & 0x100) != 0;
+                    let _read_access = (exit_qualification & 0x1) != 0;
+                    let _write_access = (exit_qualification & 0x2) != 0;
+                    let _execute_access = (exit_qualification & 0x4) != 0;
+                    let _gpa_valid = (exit_qualification & 0x80) != 0;
+                    let _translation_valid = (exit_qualification & 0x100) != 0;
 
                     let page_addr = guest_address & !0xFFF;
 

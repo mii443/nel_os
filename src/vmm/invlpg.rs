@@ -1,5 +1,4 @@
 use core::arch::asm;
-use x86_64::PhysAddr;
 
 #[repr(C, packed)]
 pub struct InveptDesc {

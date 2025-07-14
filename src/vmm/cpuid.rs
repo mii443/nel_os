@@ -1,4 +1,3 @@
-use crate::info;
 use raw_cpuid::cpuid;
 
 use super::{vcpu::VCpu, vmcs::VmxLeaf};
@@ -95,6 +94,9 @@ pub fn handle_cpuid_exit(vcpu: &mut VCpu) {
             regs.rax = 0x00000000;
             regs.rbx = 0x00000000;
             regs.rcx = signature.ecx as u64;
+            if vcpu.emulate_amd {
+                regs.rcx |= 1 << 2; // SVM
+            }
             regs.rdx = signature.edx as u64;
         }
         VmxLeaf::EXTENDED_FUNCTION => {

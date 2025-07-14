@@ -125,6 +125,28 @@ impl ShadowMsr {
             x86::msr::IA32_EFER => Self::set_ret_val(vcpu, unsafe {
                 vmread(vmcs::guest::IA32_EFER_FULL).unwrap()
             }),
+            x86::msr::IA32_TIME_STAMP_COUNTER => {
+                Self::set_ret_val(vcpu, unsafe { x86::time::rdtsc() })
+            }
+            x86::msr::IA32_FEATURE_CONTROL => {
+                // Lock bit (0) | Enable VMX inside SMX (1) | Enable VMX outside SMX (2)
+                Self::set_ret_val(vcpu, 0x5)
+            }
+            0x48 => Self::set_ret_val(vcpu, 0), // IA32_SPEC_CTRL
+            0x122 => Self::set_ret_val(vcpu, 0), // IA32_TSX_CTRL
+            0x560 => Self::set_ret_val(vcpu, 0), // IA32_RTIT_OUTPUT_BASE
+            0x561 => Self::set_ret_val(vcpu, 0), // IA32_RTIT_OUTPUT_MASK_PTRS
+            0x570 => Self::set_ret_val(vcpu, 0), // IA32_RTIT_CTL
+            0x571 => Self::set_ret_val(vcpu, 0), // IA32_RTIT_STATUS
+            0x572 => Self::set_ret_val(vcpu, 0), // IA32_CR3_MATCH
+            0x580 => Self::set_ret_val(vcpu, 0), // IA32_ADDR0_START
+            0x581 => Self::set_ret_val(vcpu, 0), // IA32_ADDR0_END
+            0x582 => Self::set_ret_val(vcpu, 0), // IA32_ADDR1_START
+            0x583 => Self::set_ret_val(vcpu, 0), // IA32_ADDR1_END
+            0x584 => Self::set_ret_val(vcpu, 0), // IA32_ADDR2_START
+            0x585 => Self::set_ret_val(vcpu, 0), // IA32_ADDR2_END
+            0x586 => Self::set_ret_val(vcpu, 0), // IA32_ADDR3_START
+            0x587 => Self::set_ret_val(vcpu, 0), // IA32_ADDR3_END
             x86::msr::IA32_FS_BASE => {
                 Self::set_ret_val(vcpu, unsafe { vmread(vmcs::guest::FS_BASE).unwrap() })
             }
@@ -132,6 +154,19 @@ impl ShadowMsr {
                 Self::set_ret_val(vcpu, unsafe { vmread(vmcs::guest::GS_BASE).unwrap() })
             }
             x86::msr::IA32_KERNEL_GSBASE => Self::shadow_read(vcpu, msr_kind),
+            x86::msr::IA32_STAR => Self::shadow_read(vcpu, msr_kind),
+            x86::msr::IA32_LSTAR => Self::shadow_read(vcpu, msr_kind),
+            x86::msr::IA32_CSTAR => Self::shadow_read(vcpu, msr_kind),
+            x86::msr::IA32_FMASK => Self::shadow_read(vcpu, msr_kind),
+            x86::msr::SYSENTER_CS_MSR => {
+                Self::set_ret_val(vcpu, unsafe { vmread(vmcs::guest::IA32_SYSENTER_CS).unwrap() })
+            }
+            x86::msr::SYSENTER_ESP_MSR => {
+                Self::set_ret_val(vcpu, unsafe { vmread(vmcs::guest::IA32_SYSENTER_ESP).unwrap() })
+            }
+            x86::msr::SYSENTER_EIP_MSR => {
+                Self::set_ret_val(vcpu, unsafe { vmread(vmcs::guest::IA32_SYSENTER_EIP).unwrap() })
+            }
             0x1b => Self::shadow_read(vcpu, msr_kind),
             0x8b => Self::set_ret_val(vcpu, 0x8701021),
             0xc0011029 => Self::set_ret_val(vcpu, 0x3000310e08202),
@@ -140,6 +175,14 @@ impl ShadowMsr {
             0xc0010002 => Self::set_ret_val(vcpu, 0),
             0xc0010003 => Self::set_ret_val(vcpu, 0),
             0xc0010007 => Self::set_ret_val(vcpu, 0),
+            0xc0010114 => Self::set_ret_val(vcpu, 0),
+            0xc0010117 => Self::set_ret_val(vcpu, 0), // MSR_VM_HSAVE_PA
+            0x277 => Self::set_ret_val(vcpu, 0x0007040600070406),
+            0xc0000103 => Self::shadow_read(vcpu, msr_kind), // TSC_AUX
+            0xd90 => Self::set_ret_val(vcpu, 0), // MSR_C1_PMON_EVNT_SEL0
+            0xe1 => Self::set_ret_val(vcpu, 0), // IA32_UMWAIT_CONTROL
+            0x1c4 => Self::set_ret_val(vcpu, 0), // Unknown MSR
+            0x1c5 => Self::set_ret_val(vcpu, 0), // Unknown MSR
             _ => {
                 panic!("Unhandled RDMSR: {:#x}", msr_kind);
             }

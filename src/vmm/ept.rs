@@ -6,7 +6,7 @@ use x86_64::{
     PhysAddr,
 };
 
-use crate::{info, memory};
+use crate::memory;
 
 pub struct EPT {
     pub root_table: PhysFrame,

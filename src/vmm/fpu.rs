@@ -1,6 +1,6 @@
 use bitfield::bitfield;
 
-use crate::{error, info};
+use crate::error;
 
 use super::vcpu::VCpu;
 

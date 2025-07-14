@@ -7,7 +7,6 @@ use crate::{
     },
 };
 use alloc::vec;
-use alloc::vec::Vec;
 use x86::current::vmx::{vmread, vmwrite};
 use x86::vmx::vmcs;
 
@@ -31,7 +30,7 @@ pub struct OpcodeEmulator {
     pub saved_rsp: Option<u64>,
 }
 
-enum VmcallControl {
+pub enum VmcallControl {
     ReturnTo32Bit,
 }
 
@@ -144,6 +143,10 @@ fn restore_replaced_opcode(vcpu: &mut VCpu) -> bool {
 }
 
 fn replace_opcode(vcpu: &mut VCpu, instruction_bytes: [u8; 16], replace: &[u8]) -> bool {
+    let rip = unsafe { vmread(vmcs::guest::RIP).unwrap() };
+
+    let guest_phys_addr = vcpu.translate_guest_address(rip).unwrap();
+    info!("Replacing opcode at address: {:#x}", guest_phys_addr);
     let replace_len = replace.len();
     if replace_len > 16 {
         return false;
@@ -152,8 +155,6 @@ fn replace_opcode(vcpu: &mut VCpu, instruction_bytes: [u8; 16], replace: &[u8]) 
     let mut original_opcode = [0u8; 16];
     original_opcode[..replace_len].copy_from_slice(&instruction_bytes[..replace_len]);
 
-    let rip = unsafe { vmread(vmcs::guest::RIP).unwrap() };
-    let guest_phys_addr = vcpu.translate_guest_address(rip).unwrap();
     vcpu.opcode_emulator.original_opcode = Some(original_opcode);
     vcpu.opcode_emulator.replaced_address = Some(guest_phys_addr);
     vcpu.opcode_emulator.replaced_size = Some(replace_len as u64);
@@ -199,14 +200,14 @@ fn return_to_32_bit(vcpu: &mut VCpu) -> bool {
         let user_ss_selector = vcpu.opcode_emulator.saved_ss_selector.unwrap_or(0x2b);
 
         // Read current values for logging
-        let current_cs_val = vmread(vmcs::guest::CS_SELECTOR).unwrap();
-        let current_cs_base = vmread(vmcs::guest::CS_BASE).unwrap();
-        let current_cs_limit = vmread(vmcs::guest::CS_LIMIT).unwrap();
-        let current_cs_rights = vmread(vmcs::guest::CS_ACCESS_RIGHTS).unwrap();
-        let current_ss_val = vmread(vmcs::guest::SS_SELECTOR).unwrap();
-        let current_ss_base = vmread(vmcs::guest::SS_BASE).unwrap();
-        let current_ss_limit = vmread(vmcs::guest::SS_LIMIT).unwrap();
-        let current_ss_rights = vmread(vmcs::guest::SS_ACCESS_RIGHTS).unwrap();
+        let _current_cs_val = vmread(vmcs::guest::CS_SELECTOR).unwrap();
+        let _current_cs_base = vmread(vmcs::guest::CS_BASE).unwrap();
+        let _current_cs_limit = vmread(vmcs::guest::CS_LIMIT).unwrap();
+        let _current_cs_rights = vmread(vmcs::guest::CS_ACCESS_RIGHTS).unwrap();
+        let _current_ss_val = vmread(vmcs::guest::SS_SELECTOR).unwrap();
+        let _current_ss_base = vmread(vmcs::guest::SS_BASE).unwrap();
+        let _current_ss_limit = vmread(vmcs::guest::SS_LIMIT).unwrap();
+        let _current_ss_rights = vmread(vmcs::guest::SS_ACCESS_RIGHTS).unwrap();
 
         // Set CS for 32-bit compatibility mode
         vmwrite(vmcs::guest::CS_SELECTOR, user_cs_selector as u64).unwrap();
@@ -255,8 +256,8 @@ fn return_to_32_bit(vcpu: &mut VCpu) -> bool {
         let gs_selector = vcpu.opcode_emulator.saved_gs_selector.unwrap_or(0);
         let gs_base = vcpu.opcode_emulator.saved_gs_base.unwrap_or(0);
 
-        let current_gs_val = vmread(vmcs::guest::GS_SELECTOR).unwrap();
-        let current_gs_base = vmread(vmcs::guest::GS_BASE).unwrap();
+        let _current_gs_val = vmread(vmcs::guest::GS_SELECTOR).unwrap();
+        let _current_gs_base = vmread(vmcs::guest::GS_BASE).unwrap();
 
         vmwrite(vmcs::guest::GS_SELECTOR, gs_selector as u64).unwrap();
         vmwrite(vmcs::guest::GS_BASE, gs_base).unwrap();
@@ -337,14 +338,14 @@ fn emulate_syscall(vcpu: &mut VCpu, instruction_bytes: [u8; 16]) -> bool {
     let current_gs_base = unsafe { vmread(vmcs::guest::GS_BASE).unwrap() };
 
     // Read all current segment values for logging
-    let current_cs_base = unsafe { vmread(vmcs::guest::CS_BASE).unwrap() };
-    let current_cs_limit = unsafe { vmread(vmcs::guest::CS_LIMIT).unwrap() };
-    let current_cs_rights = unsafe { vmread(vmcs::guest::CS_ACCESS_RIGHTS).unwrap() };
-    let current_ss_base = unsafe { vmread(vmcs::guest::SS_BASE).unwrap() };
-    let current_ss_limit = unsafe { vmread(vmcs::guest::SS_LIMIT).unwrap() };
-    let current_ss_rights = unsafe { vmread(vmcs::guest::SS_ACCESS_RIGHTS).unwrap() };
-    let current_gs_limit = unsafe { vmread(vmcs::guest::GS_LIMIT).unwrap() };
-    let current_gs_rights = unsafe { vmread(vmcs::guest::GS_ACCESS_RIGHTS).unwrap() };
+    let _current_cs_base = unsafe { vmread(vmcs::guest::CS_BASE).unwrap() };
+    let _current_cs_limit = unsafe { vmread(vmcs::guest::CS_LIMIT).unwrap() };
+    let _current_cs_rights = unsafe { vmread(vmcs::guest::CS_ACCESS_RIGHTS).unwrap() };
+    let _current_ss_base = unsafe { vmread(vmcs::guest::SS_BASE).unwrap() };
+    let _current_ss_limit = unsafe { vmread(vmcs::guest::SS_LIMIT).unwrap() };
+    let _current_ss_rights = unsafe { vmread(vmcs::guest::SS_ACCESS_RIGHTS).unwrap() };
+    let _current_gs_limit = unsafe { vmread(vmcs::guest::GS_LIMIT).unwrap() };
+    let _current_gs_rights = unsafe { vmread(vmcs::guest::GS_ACCESS_RIGHTS).unwrap() };
 
     vcpu.opcode_emulator.saved_cs_selector = Some(current_cs);
     vcpu.opcode_emulator.saved_ss_selector = Some(current_ss);
