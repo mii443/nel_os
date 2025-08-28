@@ -1,3 +1,5 @@
+UEFI ver → [nel_os_uefi](https://github.com/mii443/nel_os_uefi)
+
 # nel_os
 
 ## Required Tools
